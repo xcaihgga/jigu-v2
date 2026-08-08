@@ -3,29 +3,60 @@
 // 纯 ES5 语法，兼容旧浏览器
 // ============================================================
 
-// ===== 第一层防护：全局错误捕获 =====
+// ===== 第一层防护：全局错误捕获（允许多次叠加/更新错误） =====
 (function () {
+  function _xh(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
   var _originalErrorHandler = window.onerror;
+  window.__errorLog = window.__errorLog || [];
+  window.__appendError = function (title, detail) {
+    try {
+      var item = { t: Date.now(), title: String(title || '未知错误'), detail: String(detail || '') };
+      window.__errorLog.push(item);
+      if (window.__errorLog.length > 10) { window.__errorLog = window.__errorLog.slice(-10); }
+      var errOverlay = document.getElementById('errorOverlay');
+      if (!errOverlay) { return; }
+      var loading = document.getElementById('loadingOverlay');
+      if (loading) { loading.style.display = 'none'; }
+      var errText = document.getElementById('errorText');
+      var errSub = document.getElementById('errorSub');
+      var errList = document.getElementById('errorList');
+      if (errText) {
+        errText.textContent = window.__errorLog.length > 1 ? ('已捕获 ' + window.__errorLog.length + ' 个问题') : (item.title || '应用运行错误');
+      }
+      if (errSub) { errSub.textContent = '请刷新页面重试；如反复出现请清理浏览器缓存。'; }
+      if (errList) {
+        var html = '';
+        var list = window.__errorLog.slice(-5);
+        for (var i = 0; i < list.length; i++) {
+          var e = list[i];
+          var when = new Date(e.t);
+          var mm = String(when.getMinutes());
+          if (mm.length < 2) mm = '0' + mm;
+          var ss = String(when.getSeconds());
+          if (ss.length < 2) ss = '0' + ss;
+          var timeStr = when.getHours() + ':' + mm + ':' + ss;
+          html += '<div class="err-item"><span class="err-time">[' + _xh(timeStr) + ']</span> <span class="err-title">' + _xh(e.title) + '</span><br><span class="err-detail">' + _xh(e.detail) + '</span></div>';
+        }
+        errList.innerHTML = html;
+      }
+      errOverlay.style.display = 'flex';
+    } catch (e) {
+      console.error('appendError failed:', e);
+    }
+  };
   window.onerror = function (message, source, lineno, colno, error) {
     try {
-      var errMsg = '[' + (new Date()).toLocaleTimeString() + '] ';
-      errMsg += (typeof message === 'string') ? message : 'Unknown error';
-      if (source) { errMsg += ' @ ' + source; }
-      if (lineno) { errMsg += ':' + lineno; }
-      console.error('YZX Error:', errMsg);
-
-      var errOverlay = document.getElementById('errorOverlay');
-      if (errOverlay && !window.__errorShown) {
-        window.__errorShown = true;
-        var loading = document.getElementById('loadingOverlay');
-        if (loading) { loading.style.display = 'none'; }
-
-        var errText = document.getElementById('errorText');
-        var errSub = document.getElementById('errorSub');
-        if (errText) { errText.textContent = '应用运行错误'; }
-        if (errSub) { errSub.textContent = '请刷新页面重试'; }
-        errOverlay.style.display = 'flex';
-      }
+      var errMsg = (typeof message === 'string') ? message : 'Unknown error';
+      var detail = '';
+      if (source) { detail += source; }
+      if (lineno) { detail += ':' + lineno; }
+      if (colno) { detail += ':' + colno; }
+      console.error('YZX Error:', errMsg, detail);
+      window.__appendError(errMsg || '应用运行错误', detail);
     } catch (e) {
       console.error('Error handler itself failed:', e);
     }
@@ -36,20 +67,9 @@
   };
 
   window.addEventListener('unhandledrejection', function (event) {
-    console.error('YZX Unhandled Promise Rejection:', event.reason);
-    if (!window.__errorShown) {
-      window.__errorShown = true;
-      var errOverlay = document.getElementById('errorOverlay');
-      var loading = document.getElementById('loadingOverlay');
-      if (loading) { loading.style.display = 'none'; }
-      if (errOverlay) {
-        var errText = document.getElementById('errorText');
-        var errSub = document.getElementById('errorSub');
-        if (errText) { errText.textContent = '应用运行错误'; }
-        if (errSub) { errSub.textContent = '请刷新页面重试'; }
-        errOverlay.style.display = 'flex';
-      }
-    }
+    var reason = (event && event.reason) ? String(event.reason) : '';
+    console.error('YZX Unhandled Promise Rejection:', reason);
+    window.__appendError('异步请求异常', reason);
   });
 })();
 
@@ -57,24 +77,67 @@
 (function () {
   var STORAGE_KEYS = ['yizhixue_state', 'yizhixue_wrong', 'yizhixue_daily', 'yizhixue_stats'];
 
+  // localStorage 渐进式清理：优先砍大容量/非核心键，尽量保留 state（等级、金币、徽章）
+  // 优先级（先删/先裁）：wrongQuestionBank(容量大) → yizhixue_stats / yizhixue_daily → yizhixue_wrong → 最后才 yizhixue_state
+  function _progressiveCleanupThenSet(key, value) {
+    try { localStorage.setItem(key, value); return true; } catch (e0) {}
+    // 1) 裁错题本到 100 条（原先限制 200，先砍一半）
+    try {
+      if (window.wrongQuestionBank && Array.isArray(window.wrongQuestionBank) && window.wrongQuestionBank.length > 100) {
+        window.wrongQuestionBank = window.wrongQuestionBank.slice(-100);
+        if (key === 'yizhixue_wrong') { value = JSON.stringify(window.wrongQuestionBank); }
+      }
+    } catch (e1) {}
+    try { localStorage.setItem(key, value); return true; } catch (e1b) {}
+    // 2) 错题本继续裁到 30 条
+    try {
+      if (window.wrongQuestionBank && Array.isArray(window.wrongQuestionBank) && window.wrongQuestionBank.length > 30) {
+        window.wrongQuestionBank = window.wrongQuestionBank.slice(-30);
+        if (key === 'yizhixue_wrong') { value = JSON.stringify(window.wrongQuestionBank); }
+      }
+    } catch (e2) {}
+    try { localStorage.setItem(key, value); return true; } catch (e2b) {}
+    // 3) 清掉非核心辅助键（yizhixue_daily / yizhixue_stats）——这些不影响主功能
+    var nonCore = ['yizhixue_daily', 'yizhixue_stats'];
+    for (var n = 0; n < nonCore.length; n++) {
+      try { localStorage.removeItem(nonCore[n]); } catch (e3) {}
+    }
+    try { localStorage.setItem(key, value); return true; } catch (e3b) {}
+    // 4) 清掉完整错题本（用户还能重刷）
+    if (key !== 'yizhixue_wrong') {
+      try { localStorage.removeItem('yizhixue_wrong'); } catch (e4) {}
+      try { if (window.wrongQuestionBank) window.wrongQuestionBank = []; } catch (e4b) {}
+    }
+    try { localStorage.setItem(key, value); return true; } catch (e4c) {}
+    // 5) 最后手段：除当前 key 外的 yizhixue_* 都清；如果还不行，就只能全清
+    try {
+      for (var i = localStorage.length - 1; i >= 0; i--) {
+        var k = localStorage.key(i);
+        if (k && k.indexOf('yizhixue_') === 0 && k !== key) {
+          localStorage.removeItem(k);
+        }
+      }
+    } catch (e5) {}
+    try { localStorage.setItem(key, value); return true; } catch (e5b) {
+      // 6) 终极：直接清空所有 yizhixue_ 键
+      try {
+        for (var j = localStorage.length - 1; j >= 0; j--) {
+          var k2 = localStorage.key(j);
+          if (k2 && k2.indexOf('yizhixue_') === 0) localStorage.removeItem(k2);
+        }
+      } catch (e6) {}
+      try { localStorage.setItem(key, value); return true; } catch (e6b) { return false; }
+    }
+  }
+
   function safeSetItem(key, value) {
     try {
       localStorage.setItem(key, value);
       return true;
     } catch (e) {
       if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
-        console.warn('YZX localStorage overflow, clearing old data...');
-        for (var i = 0; i < STORAGE_KEYS.length; i++) {
-          try {
-            localStorage.removeItem(STORAGE_KEYS[i]);
-          } catch (e2) {}
-        }
-        try {
-          localStorage.setItem(key, value);
-          return true;
-        } catch (e3) {
-          return false;
-        }
+        console.warn('YZX localStorage overflow, running progressive cleanup...');
+        return _progressiveCleanupThenSet(key, value);
       }
       return false;
     }
@@ -190,7 +253,8 @@ var state = {
   studyDays: 0,
   completionCount: 0,
   mastery: {},
-  lastStudyDate: null,
+  lastStudyDate: null,   // 上次真正完成答题的日期（用于连续/学习天）
+  lastRefreshDate: null, // 上次重置每日计数的日期
   streak: 0,
   totalAnswered: 0,
   totalCorrect: 0,
@@ -413,8 +477,17 @@ function loadState() {
   }
 }
 
-function saveState() {
+// ====== saveState：默认 400ms 防抖，减少 localStorage 写次数 ======
+var _saveStateTimer = null;
+var _saveStatePending = false;
+
+function _doSaveStateNow() {
   try {
+    _saveStatePending = false;
+    if (_saveStateTimer) {
+      clearTimeout(_saveStateTimer);
+      _saveStateTimer = null;
+    }
     var safeStorage = window.__safeStorage || { set: function(k, v) { localStorage.setItem(k, v); } };
     if (wrongQuestionBank.length > 200) {
       wrongQuestionBank = wrongQuestionBank.slice(-200);
@@ -422,8 +495,29 @@ function saveState() {
     safeStorage.set('yizhixue_state', JSON.stringify(state));
     safeStorage.set('yizhixue_wrong', JSON.stringify(wrongQuestionBank));
   } catch (e) {
-    console.warn('YZX saveState failed:', e);
+    console.warn('YZX _doSaveStateNow failed:', e);
   }
+}
+
+function flushState() {
+  if (_saveStatePending) {
+    _doSaveStateNow();
+  }
+}
+
+function saveStateImmediate() {
+  _doSaveStateNow();
+}
+
+function saveState() {
+  _saveStatePending = true;
+  if (_saveStateTimer) {
+    clearTimeout(_saveStateTimer);
+    _saveStateTimer = null;
+  }
+  _saveStateTimer = setTimeout(function () {
+    _doSaveStateNow();
+  }, 400);
 }
 
 // 更新等级（根据经验值）
@@ -439,33 +533,81 @@ function updateLevel() {
 // 初始化
 // ============================================================
 
+// ====== 资源就绪状态 (与 index.html 对应) ======
+function _checkAllReady() {
+  var rdy = window.__resReady || {};
+  var dataOk = rdy.data || !!window.__dataReady;
+  var qOk = rdy.questions || (window.questionBank && window.questionBank.all);
+  return !!(dataOk && qOk && window.muscles && window.diseases);
+}
+
 function init() {
   try {
     loadState();
     updateLevel();
 
-    window.addEventListener('dataReady', onAppReady);
-
-    if (window.__dataReady) {
+    // 同时等肌肉/疾病数据 + 题库都准备好
+    var _tried = false;
+    function _boot() {
+      if (_tried) return;
+      if (!_checkAllReady()) return;
+      _tried = true;
       onAppReady();
     }
 
+    window.addEventListener('appReady', _boot);
+    window.addEventListener('dataReady', _boot);
+    // 兜底：DOMContentLoaded 之后检查
+    document.addEventListener('DOMContentLoaded', function () {
+      // 允许少量延迟，等 async 脚本 onload 事件有机会触发
+      setTimeout(_boot, 30);
+      setTimeout(_boot, 200);
+    });
+    // 再兜底：已全部就绪直接启动
+    if (_checkAllReady()) {
+      _boot();
+    }
+
+    // 超时诊断
     setTimeout(function () {
       try {
-        if (!window.__dataReady) {
-          if (window.__showLoadError) {
-            window.__showLoadError('加载超时', '15秒内未完成加载，请刷新重试');
-          } else {
-            var overlay = safeGetElement('loadingOverlay');
-            var err = safeGetElement('errorOverlay');
-            if (overlay) { overlay.style.display = 'none'; }
-            if (err) { err.style.display = 'flex'; }
-          }
+        if (_tried) return;
+        var rdy = window.__resReady || {};
+        var dataOk = rdy.data || !!window.__dataReady;
+        var qOk = rdy.questions || (window.questionBank && window.questionBank.all);
+        var detail = 'data=' + (dataOk ? 'OK' : '待加载') + ' / questions=' + (qOk ? 'OK' : '待加载');
+        console.warn('YZX boot timeout. state:', detail);
+        if (window.__showLoadError) {
+          window.__showLoadError('加载超时', '未完成资源加载：' + detail + '。请刷新重试');
+        } else {
+          var overlay = safeGetElement('loadingOverlay');
+          var err = safeGetElement('errorOverlay');
+          if (overlay) { overlay.style.display = 'none'; }
+          if (err) { err.style.display = 'flex'; }
         }
       } catch (e) {
         console.error('YZX init timeout check failed:', e);
       }
-    }, 15000);
+    }, 30000);
+
+    // ====== 页面隐藏/卸载：考试中自动暂停，避免切后台后状态乱 ======
+    try {
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden') {
+          _suspendExamIfRunning();
+          flushState();
+        }
+      });
+      window.addEventListener('pagehide', function () {
+        _cleanupExamTimer();
+        flushState();
+      });
+      window.addEventListener('beforeunload', function () {
+        flushState();
+      });
+    } catch (e) {
+      console.warn('YZX visibility listeners attach failed:', e);
+    }
   } catch (e) {
     console.error('YZX init failed:', e);
     var errOverlay = safeGetElement('errorOverlay');
@@ -478,6 +620,7 @@ function init() {
 function onAppReady() {
   try {
     if (!window.muscles || !window.diseases) { return; }
+    if (!window.questionBank || !window.questionBank.all) { return; }
 
     var overlay = safeGetElement('loadingOverlay');
     if (overlay) {
@@ -501,34 +644,41 @@ function onAppReady() {
   }
 }
 
-// 每日刷新逻辑
+// 每日刷新逻辑（仅重置计数器/重新抽题；真正的"学习一天"必须至少完成一次答题）
 function checkDailyRefresh() {
   var today = getTodayStr();
-  if (state.lastStudyDate !== today) {
-    // 新的一天
-    if (state.lastStudyDate) {
-      // 计算连续学习
-      var yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      var yStr = yesterday.getFullYear() + '-';
-      var ym = yesterday.getMonth() + 1;
-      var yd = yesterday.getDate();
-      if (ym < 10) { ym = '0' + ym; }
-      if (yd < 10) { yd = '0' + yd; }
-      yStr += ym + '-' + yd;
-      if (state.lastStudyDate === yStr) {
-        state.streak = state.streak + 1;
-      } else {
-        state.streak = 1;
-      }
-    } else {
-      state.streak = 1;
-    }
-    state.studyDays = state.studyDays + 1;
-    state.lastStudyDate = today;
+  // 新的一天：重置每日打卡计数，让每日一题重新抽取
+  if (state.lastRefreshDate !== today) {
+    state.lastRefreshDate = today;
     state.dailyDoneCount = 0;
     saveState();
   }
+}
+
+// ===== 完成一次答题后，按「自然日」统计学习天/连续打卡（每次完成 daily/exam 调用一次）=====
+function creditStudyDay() {
+  var today = getTodayStr();
+  if (state.lastStudyDate === today) { return; } // 今天已经记过学习了
+  // 计算连续
+  if (state.lastStudyDate) {
+    var yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    var yStr = yesterday.getFullYear() + '-';
+    var ym = yesterday.getMonth() + 1;
+    var yd = yesterday.getDate();
+    if (ym < 10) { ym = '0' + ym; }
+    if (yd < 10) { yd = '0' + yd; }
+    yStr += ym + '-' + yd;
+    if (state.lastStudyDate === yStr) {
+      state.streak = state.streak + 1;
+    } else {
+      state.streak = 1;
+    }
+  } else {
+    state.streak = 1;
+  }
+  state.studyDays = state.studyDays + 1;
+  state.lastStudyDate = today;
 }
 
 // ============================================================
@@ -549,9 +699,45 @@ function updateStats() {
 // Tab 切换 & 导航历史
 // ============================================================
 
+function _cleanupExamTimer() {
+  if (examModeState.timerInterval) {
+    clearInterval(examModeState.timerInterval);
+    examModeState.timerInterval = null;
+  }
+}
+
+function _safeRemovePauseMask() {
+  var mask = safeGetElement('pauseMask');
+  if (mask && mask.parentNode) {
+    try { mask.parentNode.removeChild(mask); } catch (e) {}
+  }
+}
+
+// 未完成考试/答题：暂停计时 + 去除遮罩，保证后续重入一致
+function _suspendExamIfRunning() {
+  try {
+    if (!examModeState.finished && examModeState.mode === 'exam' && examModeState.questions && examModeState.questions.length) {
+      if (!examModeState.isPaused) {
+        examModeState.isPaused = true;
+        examModeState.pauseStart = Date.now();
+      }
+      _safeRemovePauseMask();
+      _cleanupExamTimer();
+    }
+  } catch (e) {
+    console.warn('YZX suspendExam failed:', e);
+  }
+}
+
 function switchTab(tab) {
   try {
     if (!tab || typeof tab !== 'string') { return; }
+
+    // 考试进行中：离开当前 tab 前先暂停计时，避免结果页乱跳
+    if (currentTab !== tab) {
+      _suspendExamIfRunning();
+    }
+
     currentTab = tab;
 
     var pages = safeQuerySelectorAll('.page');
@@ -601,24 +787,24 @@ function pushNav(view) {
 }
 
 function navBack() {
-  // 从结果页/答题页返回到当前 Tab 的开始页
-  if (examModeState.mode === 'exam') {
-    // 停止计时器
-    if (examModeState.timerInterval) {
-      clearInterval(examModeState.timerInterval);
-      examModeState.timerInterval = null;
+  try {
+    // 先清理计时/遮罩状态，避免残留
+    _cleanupExamTimer();
+    _safeRemovePauseMask();
+    flushState();
+    // 从结果页/答题页返回到当前 Tab 的开始页
+    if (examModeState.mode === 'exam') {
+      examModeState.finished = false;
+      renderExamStart();
+    } else {
+      renderDailyStart();
     }
-    var mask = document.getElementById('pauseMask');
-    if (mask) { mask.parentNode.removeChild(mask); }
-    examModeState.finished = false;
-    renderExamStart();
-  } else {
-    renderDailyStart();
+    navHistory = [currentTab];
+    setBackButton(false);
+    window.scrollTo(0, 0);
+  } catch (e) {
+    console.error('YZX navBack failed:', e);
   }
-  // 重置导航历史
-  navHistory = [currentTab];
-  setBackButton(false);
-  window.scrollTo(0, 0);
 }
 
 function setBackButton(show) {
@@ -647,19 +833,97 @@ function renderHomeContent() {
     html += buildMethodCard('quiz');
     html += '</div>';
 
-    html += '<div class="section-title"><span class="dot"></span>知识库</div>';
+    html += '<div class="section-title"><span class="dot"></span>知识库';
+    var totals = _getKnowledgeCounts();
+    if (totals.total > 0) {
+      html += '<span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:auto">共 ' + totals.total + ' 个</span>';
+    }
+    html += '</div>';
     html += '<div class="tab-bar">';
     html += '<div class="cat-tab ' + (currentCategory === 'all' ? 'active' : '') + '" onclick="filterCategory(\'all\')">全部</div>';
-    html += '<div class="cat-tab ' + (currentCategory === 'muscle' ? 'active' : '') + '" onclick="filterCategory(\'muscle\')">肌肉系统</div>';
-    html += '<div class="cat-tab ' + (currentCategory === 'disease' ? 'active' : '') + '" onclick="filterCategory(\'disease\')">常见疾病</div>';
+    html += '<div class="cat-tab ' + (currentCategory === 'muscle' ? 'active' : '') + '" onclick="filterCategory(\'muscle\')">肌肉系统 ' + (totals.muscles > 0 ? '<span style="color:var(--text-tertiary)">(' + totals.muscles + ')</span>' : '') + '</div>';
+    html += '<div class="cat-tab ' + (currentCategory === 'disease' ? 'active' : '') + '" onclick="filterCategory(\'disease\')">常见疾病 ' + (totals.diseases > 0 ? '<span style="color:var(--text-tertiary)">(' + totals.diseases + ')</span>' : '') + '</div>';
     html += '</div>';
 
-    html += '<div id="kpList">' + buildKnowledgeCards() + '</div>';
+    // 使用分批渲染，避免一次性渲染 276 张卡片导致旧 Safari/移动端卡顿
+    html += '<div id="kpList"><div id="kpBatchContainer"></div></div>';
 
     safeSetInnerHTML(page, html);
+
+    // 启动分批渲染（40 张/帧，不阻塞）
+    _scheduleKnowledgeBatches();
   } catch (e) {
     console.error('YZX renderHomeContent failed:', e);
   }
+}
+
+// 汇总当前筛选条件下的知识点数量（纯计数，不渲染）
+function _getKnowledgeCounts() {
+  var muscles = window.muscles || [];
+  var diseases = window.diseases || [];
+  var mc = (currentCategory === 'all' || currentCategory === 'muscle') ? muscles.length : 0;
+  var dc = (currentCategory === 'all' || currentCategory === 'disease') ? diseases.length : 0;
+  return { muscles: mc, diseases: dc, total: mc + dc };
+}
+
+// 分批生成卡片 HTML（40 张一批，通过 setTimeout 穿插到浏览器的多个帧中）
+function _scheduleKnowledgeBatches() {
+  var muscles = window.muscles || [];
+  var diseases = window.diseases || [];
+  var showMuscle = (currentCategory === 'all' || currentCategory === 'muscle');
+  var showDisease = (currentCategory === 'all' || currentCategory === 'disease');
+
+  // 构造一份 item 描述数组
+  var items = [];
+  if (showMuscle) {
+    for (var i = 0; i < muscles.length; i++) {
+      items.push({ type: 'muscle', idx: i });
+    }
+  }
+  if (showDisease) {
+    for (var j = 0; j < diseases.length; j++) {
+      items.push({ type: 'disease', idx: j });
+    }
+  }
+
+  var container = safeGetElement('kpBatchContainer');
+  if (!container) { return; }
+  if (items.length === 0) {
+    container.innerHTML = '<div class="empty-state"><div class="e-icon">📭</div><div class="e-text">暂无数据</div></div>';
+    return;
+  }
+
+  var BATCH = 40;
+  var pos = 0;
+  function renderNext() {
+    if (pos >= items.length) { return; }
+    // 如果用户已经切到其他页面/切换了分类，立即中止
+    if (currentTab !== 'home') { return; }
+    var containerNow = safeGetElement('kpBatchContainer');
+    if (!containerNow) { return; }
+    var end = Math.min(pos + BATCH, items.length);
+    var chunk = '';
+    for (var k = pos; k < end; k++) {
+      var it = items[k];
+      if (it.type === 'muscle') {
+        chunk += buildMuscleCard(safeIndex(muscles, it.idx), it.idx);
+      } else {
+        chunk += buildDiseaseCard(safeIndex(diseases, it.idx), it.idx);
+      }
+    }
+    var slot = document.createElement('div');
+    slot.style.display = 'contents';
+    slot.innerHTML = chunk;
+    // 用 DocumentFragment 避免 N 次 DOM 变更回流
+    var frag = document.createDocumentFragment();
+    while (slot.firstChild) { frag.appendChild(slot.firstChild); }
+    containerNow.appendChild(frag);
+    pos = end;
+    if (pos < items.length) {
+      setTimeout(renderNext, 0);
+    }
+  }
+  renderNext();
 }
 
 function buildMethodCard(method) {
@@ -1095,9 +1359,7 @@ function startExamMode() {
 }
 
 function startExamTimer() {
-  if (examModeState.timerInterval) {
-    clearInterval(examModeState.timerInterval);
-  }
+  _cleanupExamTimer();
   examModeState.timerInterval = setInterval(function () {
     if (!examModeState.isPaused && !examModeState.finished) {
       updateExamTimer();
@@ -1106,15 +1368,14 @@ function startExamTimer() {
 }
 
 function updateExamTimer() {
-  var timerEl = document.getElementById('examTimer');
+  var timerEl = safeGetElement('examTimer');
   if (!timerEl) { return; }
   var elapsed = Math.floor((Date.now() - examModeState.startTime - examModeState.elapsedTime) / 1000);
-  var remaining = 60 * 60 - elapsed; // 60 分钟
+  var remaining = 60 * 60 - elapsed;
   if (remaining <= 0) {
     remaining = 0;
     timerEl.textContent = '00:00';
     timerEl.className = 'q-timer danger';
-    // 时间到自动提交
     submitExam();
     return;
   }
@@ -1131,27 +1392,44 @@ function updateExamTimer() {
 }
 
 function pauseExam() {
-  if (examModeState.mode !== 'exam') { return; }
-  examModeState.isPaused = true;
-  examModeState.pauseStart = Date.now();
-  // 显示暂停遮罩
-  var page = document.getElementById('page-exam');
-  if (!page) { return; }
-  var mask = document.createElement('div');
-  mask.className = 'pause-mask';
-  mask.id = 'pauseMask';
-  mask.innerHTML = '<div class="p-icon">⏸</div><div class="p-text">考试已暂停</div><button class="btn-primary" style="width:200px" onclick="resumeExam()">继续考试</button>';
-  page.appendChild(mask);
+  try {
+    if (examModeState.mode !== 'exam') { return; }
+    if (examModeState.finished) { return; }
+    if (examModeState.isPaused) { return; }
+    examModeState.isPaused = true;
+    examModeState.pauseStart = Date.now();
+    // 暂停时直接停掉 interval，节省 CPU，避免长驻内存
+    _cleanupExamTimer();
+    var page = safeGetElement('page-exam');
+    if (!page) { return; }
+    var mask = safeGetElement('pauseMask');
+    if (mask) { return; }
+    mask = document.createElement('div');
+    mask.className = 'pause-mask';
+    mask.id = 'pauseMask';
+    mask.innerHTML = '<div class="p-icon">⏸</div><div class="p-text">考试已暂停</div><button class="btn-primary" style="width:200px" onclick="resumeExam()">继续考试</button>';
+    page.appendChild(mask);
+  } catch (e) {
+    console.warn('YZX pauseExam failed:', e);
+  }
 }
 
 function resumeExam() {
-  examModeState.isPaused = false;
-  if (examModeState.pauseStart) {
-    examModeState.elapsedTime += Date.now() - examModeState.pauseStart;
-    examModeState.pauseStart = 0;
+  try {
+    if (examModeState.mode !== 'exam') { return; }
+    if (!examModeState.isPaused) { return; }
+    if (examModeState.pauseStart) {
+      examModeState.elapsedTime += Date.now() - examModeState.pauseStart;
+      examModeState.pauseStart = 0;
+    }
+    examModeState.isPaused = false;
+    _safeRemovePauseMask();
+    if (!examModeState.finished) {
+      startExamTimer();
+    }
+  } catch (e) {
+    console.warn('YZX resumeExam failed:', e);
   }
-  var mask = document.getElementById('pauseMask');
-  if (mask) { mask.parentNode.removeChild(mask); }
 }
 
 // ============================================================
@@ -1375,17 +1653,8 @@ function submitExam() {
     if (examModeState.finished) { return; }
     examModeState.finished = true;
 
-    if (examModeState.timerInterval) {
-      clearInterval(examModeState.timerInterval);
-      examModeState.timerInterval = null;
-    }
-
-    var mask = safeGetElement('pauseMask');
-    if (mask && mask.parentNode) {
-      try {
-        mask.parentNode.removeChild(mask);
-      } catch (e) {}
-    }
+    _cleanupExamTimer();
+    _safeRemovePauseMask();
 
     var total = examModeState.questions ? examModeState.questions.length : 0;
     var score = examModeState.score;
@@ -1394,6 +1663,9 @@ function submitExam() {
     if (examModeState.mode === 'exam' && examModeState.startTime) {
       elapsedSec = Math.floor((Date.now() - examModeState.startTime - examModeState.elapsedTime) / 1000);
     }
+
+    // ====== 学习天数 / 连续打卡：只在真正完成一次答题时才记 ======
+    creditStudyDay();
 
     state.completionCount++;
     if (examModeState.mode === 'daily') {
@@ -1411,12 +1683,30 @@ function submitExam() {
       }
     }
 
+    // ====== 徽章解锁（持久化）======
+    if (!state.badges || typeof state.badges !== 'object') { state.badges = {}; }
+    var nowMs = Date.now();
+    // 满分打卡 / 考试满分：本次得分 === 题目总数
+    if (total > 0 && score === total) {
+      if (examModeState.mode === 'daily') {
+        if (!state.badges.perfect_daily) { state.badges.perfect_daily = { t: nowMs }; }
+      } else {
+        if (!state.badges.perfect_exam) { state.badges.perfect_exam = { t: nowMs }; }
+      }
+    }
+    // 考试 90+ 分
+    if (examModeState.mode === 'exam' && accuracy >= 90) {
+      if (!state.badges.exam_90) { state.badges.exam_90 = { t: nowMs }; }
+    }
+
     saveState();
     updateStats();
 
     renderExamResult(score, total, accuracy, elapsedSec);
     pushNav(examModeState.mode + '-result');
     setBackButton(true);
+    // 考试结束立即落盘，防止刷新丢失结果
+    saveStateImmediate();
   } catch (e) {
     console.error('YZX submitExam failed:', e);
   }
@@ -1623,7 +1913,7 @@ function formatTime(ts) {
 function removeWrongQuestion(index) {
   if (index < 0 || index >= wrongQuestionBank.length) { return; }
   wrongQuestionBank.splice(index, 1);
-  saveState();
+  saveStateImmediate();
   renderWrongQuestions();
 }
 
@@ -1634,7 +1924,7 @@ function clearAllWrong() {
 
 function doClearWrong() {
   wrongQuestionBank = [];
-  saveState();
+  saveStateImmediate();
   renderWrongQuestions();
 }
 
@@ -1700,6 +1990,8 @@ function renderStats() {
     html += '<div class="section-title"><span class="dot"></span>成就徽章</div>';
     html += '<div class="card">';
     html += '<div class="badge-grid">';
+    // 持久化徽章（满分/考试高分）优先级最高，刷新后仍保留
+    var badges = state.badges || {};
     html += buildBadge('🌱', '初次学习', state.studyDays >= 1);
     html += buildBadge('🔥', '坚持7天', state.streak >= 7);
     html += buildBadge('💪', '坚持30天', state.studyDays >= 30);
@@ -1707,8 +1999,9 @@ function renderStats() {
     html += buildBadge('🎯', '答题500', state.totalAnswered >= 500);
     html += buildBadge('🏆', '正确80%', accuracy >= 80 && state.totalAnswered >= 50);
     html += buildBadge('📝', '完成考试', state.examDoneCount >= 1);
-    var hasPerfectScore = examModeState.questions && examModeState.score === examModeState.questions.length && examModeState.questions.length > 0;
-    html += buildBadge('⭐', '满分打卡', hasPerfectScore);
+    html += buildBadge('⭐', '满分打卡', !!badges.perfect_daily);
+    html += buildBadge('🏅', '考试90+', !!badges.exam_90);
+    html += buildBadge('💯', '考试满分', !!badges.perfect_exam);
     html += '</div>';
     html += '</div>';
 
@@ -1736,13 +2029,13 @@ function confirmReset() {
 function doReset() {
   state = {
     coins: 0, exp: 0, level: 1, studyDays: 0, completionCount: 0,
-    mastery: {}, lastStudyDate: null, streak: 0,
+    mastery: {}, lastStudyDate: null, lastRefreshDate: null, streak: 0,
     totalAnswered: 0, totalCorrect: 0,
     dailyDoneDate: null, dailyDoneCount: 0, examDoneCount: 0,
     tagStats: {}, badges: {}
   };
   wrongQuestionBank = [];
-  saveState();
+  saveStateImmediate();
   updateStats();
   renderStats();
 }

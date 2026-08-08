@@ -175,6 +175,32 @@ body {
   cursor: pointer;
   box-shadow: var(--shadow);
 }
+.error-list {
+  width: 100%;
+  max-height: 38vh;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #f1ecec;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 20px;
+  text-align: left;
+}
+.err-item {
+  padding: 8px 0;
+  border-bottom: 1px dashed #f0eded;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.err-item:last-child { border-bottom: none; }
+.err-time { color: var(--text-tertiary); margin-right: 4px; }
+.err-title { color: #c53030; font-weight: 600; }
+.err-detail { color: var(--text-tertiary); }
+.error-actions {
+  display: flex;
+  gap: 12px;
+}
 
 /* ===== 顶部导航栏 ===== */
 .top-nav {
@@ -1150,7 +1176,11 @@ main {
   <div class="error-icon">⚠️</div>
   <div class="error-text" id="errorText">加载超时</div>
   <div class="error-sub" id="errorSub">请检查网络连接后重试</div>
-  <button class="btn-reload" onclick="location.reload()">重新加载</button>
+  <div class="error-list" id="errorList"></div>
+  <div class="error-actions">
+    <button class="btn-secondary" onclick="var e=document.getElementById('errorOverlay');if(e)e.style.display='none'">暂不处理</button>
+    <button class="btn-reload" onclick="location.reload()">重新加载</button>
+  </div>
 </div>
 
 <!-- 顶部导航栏 -->
@@ -1202,8 +1232,33 @@ main {
   </button>
 </nav>
 
-<script src="data-loader.js?v=2026072102"></script>
-<script src="questions.js?v=2026072102"></script>
-<script src="app.js?v=2026072102"></script>
+<script>
+  // ====== 资源就绪管理器：避免 questions.js 同步阻塞首屏渲染 ======
+  (function () {
+    window.__resReady = { data: false, questions: false };
+    function tryFireReady() {
+      if (window.__resReady.data && window.__resReady.questions && !window.__appReadyFired) {
+        window.__appReadyFired = true;
+        window.dispatchEvent(new Event('appReady'));
+      }
+    }
+    window.addEventListener('dataReady', function () { window.__resReady.data = true; tryFireReady(); });
+    document.addEventListener('DOMContentLoaded', function () {
+      // 如果 questions.js 先加载完 (window.questionBank 已存在)，直接标记
+      if (window.questionBank) { window.__resReady.questions = true; tryFireReady(); }
+    });
+    function onQuestionsLoaded() {
+      var qs = document.querySelector('script[data-role="questions"]');
+      if (qs && qs._loaded) return;
+      var el = qs || document.querySelector('#questionsScript');
+      if (el) el._loaded = true;
+      window.__resReady.questions = true; tryFireReady();
+    }
+    window.__onQuestionsLoaded = onQuestionsLoaded;
+  })();
+</script>
+<script src="data-loader.js?v=20260808"></script>
+<script id="questionsScript" data-role="questions" src="questions.js?v=20260808" async onload="window.__onQuestionsLoaded()"></script>
+<script src="app.js?v=20260808"></script>
 </body>
 </html>
