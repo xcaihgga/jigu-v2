@@ -97700,6 +97700,141 @@ const iconSvg = {
   body: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2"/><path d="M12 7v10M8 10h8M9 22l3-5 3 5"/></svg>',
 };
 
+/* ========== XSS 防护：HTML 转义函数 ========== */
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+function escapeAttr(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/* ========== 错误监控系统 ========== */
+var ErrorTracker = (function() {
+  var MAX_LOGS = 50;
+  var STORAGE_KEY = '_error_logs';
+  var initialized = false;
+  var _ls = {
+    _store: {},
+    getItem: function(k) { try { return localStorage.getItem(k); } catch(e) { return this._store[k] || null; } },
+    setItem: function(k, v) { try { localStorage.setItem(k, v); } catch(e) { this._store[k] = String(v); } }
+  };
+  function getLogs() {
+    try { return JSON.parse(_ls.getItem(STORAGE_KEY) || '[]'); } catch(e) { return []; }
+  }
+  function saveLogs(logs) {
+    try { if (logs.length > MAX_LOGS) logs = logs.slice(-MAX_LOGS); _ls.setItem(STORAGE_KEY, JSON.stringify(logs)); } catch(e) {}
+  }
+  function capture(type, message, source, lineno, colno, error) {
+    var entry = {
+      time: new Date().toISOString(), type: type, message: message,
+      source: source || '', line: lineno || 0, col: colno || 0,
+      stack: error && error.stack ? error.stack.split('\n').slice(0, 5).join('\n') : '',
+      ua: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+      url: typeof location !== 'undefined' ? location.href : ''
+    };
+    var logs = getLogs(); logs.push(entry); saveLogs(logs);
+    try { console.error('[ErrorTracker]', type, message, entry.source + ':' + entry.line, error || ''); } catch(e) {}
+    return entry;
+  }
+  function init() {
+    if (initialized) return; initialized = true;
+    if (typeof window === 'undefined') return;
+    window.onerror = function(message, source, lineno, colno, error) { capture('error', message, source, lineno, colno, error); return false; };
+    window.addEventListener('unhandledrejection', function(event) {
+      var reason = event.reason; var msg = reason && reason.message ? reason.message : String(reason);
+      capture('unhandledrejection', msg, 'Promise', 0, 0, reason instanceof Error ? reason : null);
+    });
+    window.addEventListener('error', function(event) {
+      if (event.target && event.target.tagName && event.target !== window) {
+        var tag = event.target.tagName.toLowerCase(); var src = event.target.src || event.target.href || '';
+        if (src) capture('resource', '加载失败: <' + tag + '>', src, 0, 0, null);
+      }
+    }, true);
+    try { console.log('[ErrorTracker] 错误监控已启动'); } catch(e) {}
+  }
+  return {
+    init: init,
+    captureException: function(err, context) {
+      return capture('manual', err && err.message ? err.message : String(err), context || 'manual', 0, 0, err instanceof Error ? err : null);
+    },
+    captureMessage: function(msg) { return capture('message', msg, 'manual', 0, 0, null); },
+    getLogs: getLogs,
+    clearLogs: function() { saveLogs([]); }
+  };
+})();
+if (typeof window !== 'undefined') { ErrorTracker.init(); }
+
+/* ========== 数据访问层：统一 try-catch + 缓存 + 容量保护 ========== */
+var DataStore = {
+  _cache: {},
+  _MAX_HISTORY: 5000,
+  _MAX_PATIENTS: 2000,
+
+  _safeParse: function(raw, fallback) {
+    if (raw == null || raw === '') return fallback;
+    try { return JSON.parse(raw); } catch(e) {
+      try { ErrorTracker.captureException(e, 'DataStore._safeParse: ' + String(raw).slice(0, 80)); } catch(_) {}
+      return fallback;
+    }
+  },
+  _safeStringify: function(data) {
+    try { return JSON.stringify(data); } catch(e) {
+      try { ErrorTracker.captureException(e, 'DataStore._safeStringify'); } catch(_) {}
+      return null;
+    }
+  },
+  get: function(key, fallback) {
+    fallback = arguments.length > 1 ? fallback : [];
+    if (this._cache.hasOwnProperty(key)) return this._cache[key];
+    try {
+      var raw = localStorage.getItem(key);
+      var data = this._safeParse(raw, fallback);
+      this._cache[key] = data;
+      return data;
+    } catch(e) {
+      try { ErrorTracker.captureException(e, 'DataStore.get(' + key + ')'); } catch(_) {}
+      return fallback;
+    }
+  },
+  set: function(key, data) {
+    try {
+      if (key === 'assessmentHistory' && Array.isArray(data) && data.length > this._MAX_HISTORY) data = data.slice(0, this._MAX_HISTORY);
+      if (key === 'patients' && Array.isArray(data) && data.length > this._MAX_PATIENTS) data = data.slice(0, this._MAX_PATIENTS);
+      var json = this._safeStringify(data);
+      if (json === null) return false;
+      localStorage.setItem(key, json);
+      this._cache[key] = data;
+      return true;
+    } catch(e) {
+      if (e.name === 'QuotaExceededError') {
+        try { ErrorTracker.captureException(e, 'DataStore.set QuotaExceeded: ' + key); } catch(_) {}
+        try { alert('本地存储已满，请先导出并清理历史数据。'); } catch(_) {}
+      } else {
+        try { ErrorTracker.captureException(e, 'DataStore.set(' + key + ')'); } catch(_) {}
+      }
+      return false;
+    }
+  },
+  clearCache: function(key) {
+    if (arguments.length === 0) { this._cache = {}; }
+    else if (this._cache.hasOwnProperty(key)) { delete this._cache[key]; }
+  },
+  getPatients: function() { return this.get('patients', []); },
+  setPatients: function(data) { return this.set('patients', data); },
+  getHistory: function() { return this.get('assessmentHistory', []); },
+  setHistory: function(data) { return this.set('assessmentHistory', data); }
+};
+
 function icon(name, size) {
   const s = size || 24;
   return '<span class="icon" style="width:' + s + 'px;height:' + s + 'px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;">' + (iconSvg[name] || iconSvg.other) + '</span>';
@@ -98990,7 +99125,7 @@ function showToolDetail(idx) {
     } else if (t.content.parameters) {
       contentHtml = t.content.parameters.map(p => 
         '<div class="field-row">' +
-          '<div class="field-label">' + p.name + '</div>' +
+          '<div class="field-label">' + escapeHtml(p.name) + '</div>' +
           '<div class="field-value"><p>' + (p.normal || p.value || '') + '</p></div>' +
         '</div>'
       ).join('');
@@ -99431,7 +99566,7 @@ function showScaleResult(result) {
       const score = currentScaleAnswers[i * 2 + 1] || 0;
       content += 
         '<div class="field-row">' +
-          '<div class="field-label">' + activity + '</div>' +
+          '<div class="field-label">' + escapeHtml(activity) + '</div>' +
           '<div class="field-value">' + score + ' 分</div>' +
         '</div>';
     }
@@ -99507,9 +99642,9 @@ function saveAssessment() {
     patientId: currentPatientId || null
   };
   
-  const history = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
+  const history = DataStore.getHistory();
   history.unshift(record);
-  localStorage.setItem('assessmentHistory', JSON.stringify(history));
+  DataStore.setHistory(history);
   
   closeModal();
   alert('评估记录已保存！');
@@ -99521,8 +99656,8 @@ function saveAssessment() {
 
 function renderScaleHistory() {
   const container = document.getElementById('scaleListContainer');
-  const history = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
-  const patients = JSON.parse(localStorage.getItem('patients') || '[]');
+  const history = DataStore.getHistory();
+  const patients = DataStore.getPatients();
 
   let html =
     '<div class="page-head">' +
@@ -99610,7 +99745,7 @@ function setHistoryTimeRange(range) {
 }
 
 function viewHistoryDetail(recordId) {
-  const history = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
+  const history = DataStore.getHistory();
   const record = history.find(r => r.id === recordId);
   if (!record) return;
   
@@ -99656,7 +99791,7 @@ function viewHistoryDetail(recordId) {
     for (let i = 0; i < result.activities.length; i++) {
       content += 
         '<div class="field-row">' +
-          '<div class="field-label">' + result.activities[i] + '</div>' +
+          '<div class="field-label">' + escapeHtml(result.activities[i]) + '</div>' +
           '<div class="field-value">' + (record.answers[i * 2 + 1] || 0) + ' 分</div>' +
         '</div>';
     }
@@ -99694,9 +99829,9 @@ function viewHistoryDetail(recordId) {
 function deleteHistory(recordId) {
   if (!confirm('确定要删除这条评估记录吗？')) return;
   
-  let history = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
+  let history = DataStore.getHistory();
   history = history.filter(r => r.id !== recordId);
-  localStorage.setItem('assessmentHistory', JSON.stringify(history));
+  DataStore.setHistory(history);
   
   closeModal();
   renderScaleHistory();
@@ -99718,7 +99853,7 @@ function switchAssessmentTab(tab) {
 
 function renderScaleChart() {
   const container = document.getElementById('scaleListContainer');
-  const history = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
+  const history = DataStore.getHistory();
 
   const scaleMap = {};
   history.forEach(r => {
@@ -99982,7 +100117,7 @@ function drawTrendChart(scaleMap) {
 }
 
 function showExportOptions(recordId) {
-  const history = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
+  const history = DataStore.getHistory();
   const record = history.find(r => r.id === recordId);
   if (!record) return;
   
@@ -100014,7 +100149,7 @@ function showExportOptions(recordId) {
 }
 
 function exportAsText(recordId) {
-  const history = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
+  const history = DataStore.getHistory();
   const record = history.find(r => r.id === recordId);
   if (!record) return;
   
@@ -100072,7 +100207,7 @@ function fallbackCopy(text) {
 }
 
 function exportAsImage(recordId) {
-  const history = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
+  const history = DataStore.getHistory();
   const record = history.find(r => r.id === recordId);
   if (!record) return;
   
@@ -100201,7 +100336,7 @@ function renderPatientList() {
   const container = document.getElementById('patientListContainer');
   if (!container) return;
   
-  const patients = JSON.parse(localStorage.getItem('patients') || '[]');
+  const patients = DataStore.getPatients();
   const kw = document.getElementById('patientSearch') ? document.getElementById('patientSearch').value.trim().toLowerCase() : '';
   
   let filtered = patients;
@@ -100225,30 +100360,30 @@ function renderPatientList() {
   
   let html = '';
   filtered.forEach(p => {
-    const assessments = JSON.parse(localStorage.getItem('assessmentHistory') || '[]').filter(a => a.patientId === p.id);
+    const assessments = DataStore.getHistory().filter(a => a.patientId === p.id);
     const name = p.name || '未命名';
     const genderSym = p.gender === '男' ? '♂' : (p.gender === '女' ? '♀' : '');
     const genderClass = p.gender === '男' ? 'gender-male' : (p.gender === '女' ? 'gender-female' : '');
     
     let metaHtml = '<div class="patient-card-meta">';
     if (genderSym) {
-      metaHtml += '<span class="meta-item ' + genderClass + '">' + genderSym + ' ' + (p.gender || '') + '</span>';
+      metaHtml += '<span class="meta-item ' + escapeAttr(genderClass) + '">' + escapeHtml(genderSym + ' ' + (p.gender || '')) + '</span>';
     }
     if (p.age) {
-      metaHtml += '<span class="meta-item">' + p.age + '岁</span>';
+      metaHtml += '<span class="meta-item">' + escapeHtml(p.age) + '岁</span>';
     }
     if (p.bedNumber) {
-      metaHtml += '<span class="meta-item">床位 ' + p.bedNumber + '</span>';
+      metaHtml += '<span class="meta-item">床位 ' + escapeHtml(p.bedNumber) + '</span>';
     }
     metaHtml += '</div>';
     
     html += 
       '<div class="patient-card" onclick="showPatientDetail(' + p.id + ')">' +
         '<div class="patient-card-header">' +
-          '<div class="patient-card-name">' + name + '</div>' +
+          '<div class="patient-card-name">' + escapeHtml(name) + '</div>' +
           icon('chevronRight', 18) +
         '</div>' +
-        '<div class="patient-card-info">' + (p.diagnosis || p.chiefComplaint || '暂无诊断') + '</div>' +
+        '<div class="patient-card-info">' + escapeHtml(p.diagnosis || p.chiefComplaint || '暂无诊断') + '</div>' +
         metaHtml +
         '<div class="patient-card-tags">' +
           '<span class="assessment-tag">' + icon('assessment', 12) + ' ' + assessments.length + ' 条评估</span>' +
@@ -100266,7 +100401,7 @@ document.getElementById('btnAddPatient').addEventListener('click', function() {
 document.getElementById('btnExportPatientCsv').addEventListener('click', exportPatientCsv);
 
 function showPatientForm(patientId) {
-  const patients = JSON.parse(localStorage.getItem('patients') || '[]');
+  const patients = DataStore.getPatients();
   const patient = patientId ? patients.find(p => p.id === patientId) : null;
   const isEdit = !!patient;
   
@@ -100283,7 +100418,7 @@ function showPatientForm(patientId) {
     '<div class="form-row">' +
       '<div class="form-group">' +
         '<label class="form-label">姓名<span class="required">*</span></label>' +
-        '<input type="text" class="form-input" id="pfName" value="' + (p.name || '') + '" placeholder="请输入姓名">' +
+        '<input type="text" class="form-input" id="pfName" value="' + escapeAttr(p.name || '') + '" placeholder="请输入姓名">' +
       '</div>' +
       '<div class="form-group">' +
         '<label class="form-label">性别<span class="required">*</span></label>' +
@@ -100301,7 +100436,7 @@ function showPatientForm(patientId) {
       '</div>' +
       '<div class="form-group">' +
         '<label class="form-label">床号</label>' +
-        '<input type="text" class="form-input" id="pfBedNumber" value="' + (p.bedNumber || '') + '" placeholder="如：12床">' +
+        '<input type="text" class="form-input" id="pfBedNumber" value="' + escapeAttr(p.bedNumber || '') + '" placeholder="如：12床">' +
       '</div>' +
     '</div>' +
     '<div class="form-group">' +
@@ -100314,11 +100449,11 @@ function showPatientForm(patientId) {
     '</div>' +
     '<div class="form-group">' +
       '<label class="form-label">诊断<span class="required">*</span></label>' +
-      '<input type="text" class="form-input" id="pfDiagnosis" value="' + (p.diagnosis || '') + '" placeholder="如：腰椎间盘突出症">' +
+      '<input type="text" class="form-input" id="pfDiagnosis" value="' + escapeAttr(p.diagnosis || '') + '" placeholder="如：腰椎间盘突出症">' +
     '</div>' +
     '<div class="form-group">' +
       '<label class="form-label">部位</label>' +
-      '<input type="text" class="form-input" id="pfBodyPart" value="' + (p.bodyPart || '') + '" placeholder="如：腰椎L4-L5">' +
+      '<input type="text" class="form-input" id="pfBodyPart" value="' + escapeAttr(p.bodyPart || '') + '" placeholder="如：腰椎L4-L5">' +
     '</div>' +
     '<div class="form-group">' +
       '<label class="form-label">主诉</label>' +
@@ -100384,7 +100519,7 @@ function savePatient(patientId) {
     return;
   }
   
-  const patients = JSON.parse(localStorage.getItem('patients') || '[]');
+  const patients = DataStore.getPatients();
   
   const patientData = {
     name: name,
@@ -100418,14 +100553,14 @@ function savePatient(patientId) {
     patients.unshift(patientData);
   }
   
-  localStorage.setItem('patients', JSON.stringify(patients));
+  DataStore.setPatients(patients);
   closeModal();
   renderPatientList();
   alert('保存成功！');
 }
 
 function exportPatientCsv() {
-  const patients = JSON.parse(localStorage.getItem('patients') || '[]');
+  const patients = DataStore.getPatients();
   if (patients.length === 0) {
     alert('暂无患者数据可导出');
     return;
@@ -100459,41 +100594,41 @@ function exportPatientCsv() {
 }
 
 function showPatientDetail(patientId) {
-  const patients = JSON.parse(localStorage.getItem('patients') || '[]');
+  const patients = DataStore.getPatients();
   const p = patients.find(x => x.id === patientId);
   if (!p) return;
   
   currentPatientId = patientId;
   
-  const allAssessments = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
+  const allAssessments = DataStore.getHistory();
   const patientAssessments = allAssessments.filter(a => a.patientId === patientId);
   
-  const title = (p.name || '未命名') + (p.age ? ' (' + p.age + '岁)' : '') + (p.gender ? ' · ' + p.gender : '');
+  const title = escapeHtml(p.name || '未命名') + (p.age ? ' (' + escapeHtml(p.age) + '岁)' : '') + (p.gender ? ' · ' + escapeHtml(p.gender) : '');
   
   let content = 
     '<div class="detail-header" style="margin:-16px -16px 16px -16px;border-radius:0;">' +
       '<div class="detail-header-title">' + title + '</div>' +
-      '<div class="detail-header-sub">' + (p.diagnosis || '暂无诊断') + '</div>' +
-      (p.bodyPart ? '<div class="detail-header-sub" style="margin-top:4px;">部位：' + p.bodyPart + '</div>' : '') +
+      '<div class="detail-header-sub">' + escapeHtml(p.diagnosis || '暂无诊断') + '</div>' +
+      (p.bodyPart ? '<div class="detail-header-sub" style="margin-top:4px;">部位：' + escapeHtml(p.bodyPart) + '</div>' : '') +
     '</div>';
   
   content +=
     '<div class="result-detail-section">' +
       '<div class="result-detail-title">' + icon('basics', 18) + '基本信息</div>' +
-      '<div class="field-row"><div class="field-label">姓名</div><div class="field-value">' + (p.name || '-') + '</div></div>' +
-      '<div class="field-row"><div class="field-label">性别/年龄</div><div class="field-value">' + (p.gender || '-') + ' / ' + (p.age || '-') + '岁</div></div>' +
-      '<div class="field-row"><div class="field-label">床号</div><div class="field-value">' + (p.bedNumber || '-') + '</div></div>' +
-      '<div class="field-row"><div class="field-label">联系电话</div><div class="field-value">' + (p.phone || '-') + '</div></div>' +
-      '<div class="field-row"><div class="field-label">评估阶段</div><div class="field-value">' + (p.assessmentStage || '-') + '</div></div>' +
-      '<div class="field-row"><div class="field-label">诊断</div><div class="field-value">' + (p.diagnosis || '-') + '</div></div>' +
-      '<div class="field-row"><div class="field-label">部位</div><div class="field-value">' + (p.bodyPart || '-') + '</div></div>' +
+      '<div class="field-row"><div class="field-label">姓名</div><div class="field-value">' + escapeHtml(p.name || '-') + '</div></div>' +
+      '<div class="field-row"><div class="field-label">性别/年龄</div><div class="field-value">' + escapeHtml(p.gender || '-') + ' / ' + escapeHtml(p.age || '-') + '岁</div></div>' +
+      '<div class="field-row"><div class="field-label">床号</div><div class="field-value">' + escapeHtml(p.bedNumber || '-') + '</div></div>' +
+      '<div class="field-row"><div class="field-label">联系电话</div><div class="field-value">' + escapeHtml(p.phone || '-') + '</div></div>' +
+      '<div class="field-row"><div class="field-label">评估阶段</div><div class="field-value">' + escapeHtml(p.assessmentStage || '-') + '</div></div>' +
+      '<div class="field-row"><div class="field-label">诊断</div><div class="field-value">' + escapeHtml(p.diagnosis || '-') + '</div></div>' +
+      '<div class="field-row"><div class="field-label">部位</div><div class="field-value">' + escapeHtml(p.bodyPart || '-') + '</div></div>' +
     '</div>';
 
   if (p.chiefComplaint) {
     content +=
       '<div class="result-detail-section">' +
         '<div class="result-detail-title">' + icon('symptoms', 18) + '主诉</div>' +
-        '<p style="font-size:14px;color:var(--text-2);line-height:1.7;">' + p.chiefComplaint + '</p>' +
+        '<p style="font-size:14px;color:var(--text-2);line-height:1.7;">' + escapeHtml(p.chiefComplaint) + '</p>' +
       '</div>';
   }
 
@@ -100501,7 +100636,7 @@ function showPatientDetail(patientId) {
     content +=
       '<div class="result-detail-section">' +
         '<div class="result-detail-title">' + icon('info', 18) + '既往病史</div>' +
-        '<p style="font-size:14px;color:var(--text-2);line-height:1.7;white-space:pre-wrap;">' + p.medicalHistory + '</p>' +
+        '<p style="font-size:14px;color:var(--text-2);line-height:1.7;white-space:pre-wrap;">' + escapeHtml(p.medicalHistory) + '</p>' +
       '</div>';
   }
   
@@ -100509,7 +100644,7 @@ function showPatientDetail(patientId) {
     content += 
       '<div class="result-detail-section">' +
         '<div class="result-detail-title">' + icon('treatment', 18) + '治疗方案</div>' +
-        '<p style="font-size:14px;color:var(--text-2);line-height:1.7;white-space:pre-wrap;">' + p.treatmentPlan + '</p>' +
+        '<p style="font-size:14px;color:var(--text-2);line-height:1.7;white-space:pre-wrap;">' + escapeHtml(p.treatmentPlan) + '</p>' +
       '</div>';
   }
   
@@ -100569,7 +100704,7 @@ function showPatientDetail(patientId) {
 }
 
 function showAddAssessmentToPatient() {
-  const allAssessments = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
+  const allAssessments = DataStore.getHistory();
   const unlinkedAssessments = allAssessments.filter(a => !a.patientId);
   
   if (unlinkedAssessments.length === 0) {
@@ -100603,21 +100738,21 @@ function showAddAssessmentToPatient() {
 }
 
 function linkAssessmentToPatient(assessmentId) {
-  const allAssessments = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
+  const allAssessments = DataStore.getHistory();
   const idx = allAssessments.findIndex(a => a.id === assessmentId);
   
   if (idx >= 0) {
     allAssessments[idx].patientId = currentPatientId;
-    localStorage.setItem('assessmentHistory', JSON.stringify(allAssessments));
+    DataStore.setHistory(allAssessments);
     
-    const patients = JSON.parse(localStorage.getItem('patients') || '[]');
+    const patients = DataStore.getPatients();
     const pIdx = patients.findIndex(p => p.id === currentPatientId);
     if (pIdx >= 0) {
       if (!patients[pIdx].assessmentIds) patients[pIdx].assessmentIds = [];
       if (!patients[pIdx].assessmentIds.includes(assessmentId)) {
         patients[pIdx].assessmentIds.push(assessmentId);
       }
-      localStorage.setItem('patients', JSON.stringify(patients));
+      DataStore.setPatients(patients);
     }
     
     alert('关联成功！');
@@ -100628,15 +100763,15 @@ function linkAssessmentToPatient(assessmentId) {
 function deletePatient(patientId) {
   if (!confirm('确定要删除这个病例吗？关联的评估记录不会被删除。')) return;
   
-  let patients = JSON.parse(localStorage.getItem('patients') || '[]');
+  let patients = DataStore.getPatients();
   patients = patients.filter(p => p.id !== patientId);
-  localStorage.setItem('patients', JSON.stringify(patients));
+  DataStore.setPatients(patients);
   
-  const allAssessments = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
+  const allAssessments = DataStore.getHistory();
   allAssessments.forEach(a => {
     if (a.patientId === patientId) a.patientId = null;
   });
-  localStorage.setItem('assessmentHistory', JSON.stringify(allAssessments));
+  DataStore.setHistory(allAssessments);
   
   currentPatientId = null;
   closeModal();
@@ -100697,11 +100832,11 @@ function renderProtocolList() {
       '<div class="protocol-card-header">' +
         '<div class="protocol-card-icon" data-cat="' + p.category + '">' + icon(p.icon || 'protocol', 26) + '</div>' +
         '<div class="protocol-card-info">' +
-          '<div class="protocol-card-title">' + p.name + '</div>' +
+          '<div class="protocol-card-title">' + escapeHtml(p.name) + '</div>' +
           '<div class="protocol-card-evidence">循证来源：' + (p.evidence || '临床实践共识') + '</div>' +
         '</div>' +
       '</div>' +
-      '<div class="protocol-card-desc">' + (p.description || (p.isPain ? '针对' + p.name + '的分阶段疼痛管理方案，涵盖病因分析与分期干预。' : '')) + '</div>' +
+      '<div class="protocol-card-desc">' + escapeHtml(p.description || (p.isPain ? '针对' + p.name + '的分阶段疼痛管理方案，涵盖病因分析与分期干预。' : '')) + '</div>' +
       '<span class="protocol-card-badge" data-cat="' + p.category + '">' + p.categoryName + '</span>' +
       (p.isPro ? ' <span class="pro-badge">PRO</span>' : '') +
       (p.isPain ? ' <span style="display:inline-block;padding:2px 8px;background:linear-gradient(135deg,var(--status-error-default),#dc2626);color:#fff;font-size:11px;font-weight:600;border-radius:20px;margin-left:4px;">疼痛</span>' : '') +
@@ -100765,9 +100900,9 @@ function showProtocolDetail(id) {
 
   container.innerHTML = '<div class="protocol-detail">' +
     '<div class="protocol-detail-header">' +
-      '<div class="protocol-detail-title">' + p.name + (p.isPro ? ' <span class="pro-badge">PRO</span>' : '') + (p.isPain ? ' <span style="display:inline-block;padding:2px 8px;background:linear-gradient(135deg,var(--status-error-default),#dc2626);color:#fff;font-size:11px;font-weight:600;border-radius:20px;">疼痛</span>' : '') + '</div>' +
+      '<div class="protocol-detail-title">' + escapeHtml(p.name) + (p.isPro ? ' <span class="pro-badge">PRO</span>' : '') + (p.isPain ? ' <span style="display:inline-block;padding:2px 8px;background:linear-gradient(135deg,var(--status-error-default),#dc2626);color:#fff;font-size:11px;font-weight:600;border-radius:20px;">疼痛</span>' : '') + '</div>' +
       '<div class="protocol-detail-evidence">循证来源：' + (p.evidence || '临床实践共识') + '</div>' +
-      '<div class="protocol-detail-desc">' + (p.description || (p.isPain ? '针对' + p.name + '的分阶段疼痛管理方案，涵盖病因分析、临床表现与分期干预。' : '')) + '</div>' +
+      '<div class="protocol-detail-desc">' + escapeHtml(p.description || (p.isPain ? '针对' + p.name + '的分阶段疼痛管理方案，涵盖病因分析、临床表现与分期干预。' : '')) + '</div>' +
       '<span class="protocol-card-badge" data-cat="' + p.category + '" style="margin-top:8px;">' + p.categoryName + '</span>' +
     '</div>' +
     extraHtml +
@@ -100792,8 +100927,8 @@ var dashboardCategoryMap = {
 var dashboardCategoryColors = ['var(--accent-blue)', 'var(--accent-teal)', 'var(--accent-amber)', 'var(--accent-violet)', 'var(--accent-magenta)', 'var(--bg-brand)', 'var(--accent-teal)', 'var(--status-error-default)'];
 
 function renderDashboard() {
-  var records = JSON.parse(localStorage.getItem('assessmentHistory') || '[]');
-  var patients = JSON.parse(localStorage.getItem('patients') || '[]');
+  var records = DataStore.getHistory();
+  var patients = DataStore.getPatients();
 
   var totalAssessments = records.length;
   var totalPatients = patients.length;
