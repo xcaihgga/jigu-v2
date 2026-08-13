@@ -97779,6 +97779,8 @@ var DataStore = {
   _cache: {},
   _MAX_HISTORY: 5000,
   _MAX_PATIENTS: 2000,
+  _DATA_VERSION: 2,
+  _KEY_PREFIX: 'msr_v5_',
 
   _safeParse: function(raw, fallback) {
     if (raw == null || raw === '') return fallback;
@@ -97793,13 +97795,44 @@ var DataStore = {
       return null;
     }
   },
+  _applyKeyPrefix: function(key) {
+    return this._KEY_PREFIX + key;
+  },
+  _initDataVersion: function() {
+    try {
+      var versionKey = this._applyKeyPrefix('dataVersion');
+      var current = parseInt(localStorage.getItem(versionKey), 10);
+      if (isNaN(current) || current < this._DATA_VERSION) {
+        try { ErrorTracker.captureException(new Error('数据版本升级: ' + current + ' -> ' + this._DATA_VERSION), 'DataStore._initDataVersion'); } catch(_) {}
+        localStorage.setItem(versionKey, String(this._DATA_VERSION));
+        this._runMigrations(current || 0);
+      }
+    } catch(e) {
+      try { ErrorTracker.captureException(e, 'DataStore._initDataVersion'); } catch(_) {}
+    }
+  },
+  _runMigrations: function(fromVersion) {
+    if (fromVersion < 2) {
+      try {
+        var oldKeys = ['patients', 'assessmentHistory', 'dashboardCache'];
+        var newKeys = oldKeys.map(k => this._applyKeyPrefix(k));
+        for (var i = 0; i < oldKeys.length; i++) {
+          var val = localStorage.getItem(oldKeys[i]);
+          if (val !== null && localStorage.getItem(newKeys[i]) === null) {
+            localStorage.setItem(newKeys[i], val);
+          }
+        }
+      } catch(e) {}
+    }
+  },
   get: function(key, fallback) {
     fallback = arguments.length > 1 ? fallback : [];
-    if (this._cache.hasOwnProperty(key)) return this._cache[key];
+    var prefixedKey = this._applyKeyPrefix(key);
+    if (this._cache.hasOwnProperty(prefixedKey)) return this._cache[prefixedKey];
     try {
-      var raw = localStorage.getItem(key);
+      var raw = localStorage.getItem(prefixedKey);
       var data = this._safeParse(raw, fallback);
-      this._cache[key] = data;
+      this._cache[prefixedKey] = data;
       return data;
     } catch(e) {
       try { ErrorTracker.captureException(e, 'DataStore.get(' + key + ')'); } catch(_) {}
@@ -97807,13 +97840,14 @@ var DataStore = {
     }
   },
   set: function(key, data) {
+    var prefixedKey = this._applyKeyPrefix(key);
     try {
       if (key === 'assessmentHistory' && Array.isArray(data) && data.length > this._MAX_HISTORY) data = data.slice(0, this._MAX_HISTORY);
       if (key === 'patients' && Array.isArray(data) && data.length > this._MAX_PATIENTS) data = data.slice(0, this._MAX_PATIENTS);
       var json = this._safeStringify(data);
       if (json === null) return false;
-      localStorage.setItem(key, json);
-      this._cache[key] = data;
+      localStorage.setItem(prefixedKey, json);
+      this._cache[prefixedKey] = data;
       return true;
     } catch(e) {
       if (e.name === 'QuotaExceededError') {
@@ -97827,13 +97861,59 @@ var DataStore = {
   },
   clearCache: function(key) {
     if (arguments.length === 0) { this._cache = {}; }
-    else if (this._cache.hasOwnProperty(key)) { delete this._cache[key]; }
+    else {
+      var prefixedKey = this._applyKeyPrefix(key);
+      if (this._cache.hasOwnProperty(prefixedKey)) { delete this._cache[prefixedKey]; }
+    }
   },
   getPatients: function() { return this.get('patients', []); },
   setPatients: function(data) { return this.set('patients', data); },
   getHistory: function() { return this.get('assessmentHistory', []); },
-  setHistory: function(data) { return this.set('assessmentHistory', data); }
+  setHistory: function(data) { return this.set('assessmentHistory', data); },
+  exportData: function() {
+    try {
+      var result = {};
+      var keys = ['patients', 'assessmentHistory', 'dashboardCache', 'dataVersion'];
+      keys.forEach(function(k) {
+        var prefixed = this._applyKeyPrefix(k);
+        result[k] = this._safeParse(localStorage.getItem(prefixed), null);
+      }.bind(this));
+      result._exportTime = new Date().toISOString();
+      result._version = this._DATA_VERSION;
+      return JSON.stringify(result, null, 2);
+    } catch(e) {
+      try { ErrorTracker.captureException(e, 'DataStore.exportData'); } catch(_) {}
+      return null;
+    }
+  },
+  importData: function(jsonStr) {
+    try {
+      var data = JSON.parse(jsonStr);
+      if (!data || typeof data !== 'object') return { success: false, error: '数据格式无效' };
+      if (data.patients) this.set('patients', data.patients);
+      if (data.assessmentHistory) this.set('assessmentHistory', data.assessmentHistory);
+      this.clearCache();
+      return { success: true, patientCount: (data.patients || []).length, historyCount: (data.assessmentHistory || []).length };
+    } catch(e) {
+      try { ErrorTracker.captureException(e, 'DataStore.importData'); } catch(_) {}
+      return { success: false, error: e.message };
+    }
+  }
 };
+
+if (typeof window !== 'undefined') { DataStore._initDataVersion(); }
+
+function _safeRender(fn, context) {
+  try {
+    return fn();
+  } catch(e) {
+    try {
+      ErrorTracker.captureException(e, '_safeRender: ' + (context || fn.name || 'anonymous'));
+      console.error('[渲染错误]', e.message, e.stack);
+    } catch(_) {}
+    return false;
+  }
+}
 
 function icon(name, size) {
   const s = size || 24;
@@ -100826,18 +100906,18 @@ function renderProtocolList() {
   
   container.innerHTML = filtered.map(function(p) {
     var stageTags = p.stages.map(function(s, i) {
-      return '<span class="protocol-stage-tag">' + s.name.split('：')[0].split('（')[0] + '</span>';
+      return '<span class="protocol-stage-tag">' + escapeHtml(s.name.split('：')[0].split('（')[0]) + '</span>';
     }).join('');
     return '<div class="protocol-card" data-id="' + p.id + '">' +
       '<div class="protocol-card-header">' +
-        '<div class="protocol-card-icon" data-cat="' + p.category + '">' + icon(p.icon || 'protocol', 26) + '</div>' +
+        '<div class="protocol-card-icon" data-cat="' + escapeAttr(p.category) + '">' + icon(p.icon || 'protocol', 26) + '</div>' +
         '<div class="protocol-card-info">' +
           '<div class="protocol-card-title">' + escapeHtml(p.name) + '</div>' +
-          '<div class="protocol-card-evidence">循证来源：' + (p.evidence || '临床实践共识') + '</div>' +
+          '<div class="protocol-card-evidence">循证来源：' + escapeHtml(p.evidence || '临床实践共识') + '</div>' +
         '</div>' +
       '</div>' +
       '<div class="protocol-card-desc">' + escapeHtml(p.description || (p.isPain ? '针对' + p.name + '的分阶段疼痛管理方案，涵盖病因分析与分期干预。' : '')) + '</div>' +
-      '<span class="protocol-card-badge" data-cat="' + p.category + '">' + p.categoryName + '</span>' +
+      '<span class="protocol-card-badge" data-cat="' + escapeAttr(p.category) + '">' + escapeHtml(p.categoryName) + '</span>' +
       (p.isPro ? ' <span class="pro-badge">PRO</span>' : '') +
       (p.isPain ? ' <span style="display:inline-block;padding:2px 8px;background:linear-gradient(135deg,var(--status-error-default),#dc2626);color:#fff;font-size:11px;font-weight:600;border-radius:20px;margin-left:4px;">疼痛</span>' : '') +
       '<div class="protocol-card-stages">' + stageTags + '</div>' +
@@ -100874,7 +100954,7 @@ function showProtocolDetail(id) {
     return '<div class="stage-card">' +
       '<div class="stage-header" onclick="this.nextElementSibling.classList.toggle(\'open\');this.querySelector(\'.stage-arrow\').classList.toggle(\'open\')">' +
         '<div class="stage-number">' + (i + 1) + '</div>' +
-        '<div class="stage-name">' + s.name + '</div>' +
+        '<div class="stage-name">' + escapeHtml(s.name) + '</div>' +
         '<span class="icon stage-arrow" style="width:20px;height:20px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>' +
       '</div>' +
       '<div class="stage-content open">' +
@@ -100901,9 +100981,9 @@ function showProtocolDetail(id) {
   container.innerHTML = '<div class="protocol-detail">' +
     '<div class="protocol-detail-header">' +
       '<div class="protocol-detail-title">' + escapeHtml(p.name) + (p.isPro ? ' <span class="pro-badge">PRO</span>' : '') + (p.isPain ? ' <span style="display:inline-block;padding:2px 8px;background:linear-gradient(135deg,var(--status-error-default),#dc2626);color:#fff;font-size:11px;font-weight:600;border-radius:20px;">疼痛</span>' : '') + '</div>' +
-      '<div class="protocol-detail-evidence">循证来源：' + (p.evidence || '临床实践共识') + '</div>' +
+      '<div class="protocol-detail-evidence">循证来源：' + escapeHtml(p.evidence || '临床实践共识') + '</div>' +
       '<div class="protocol-detail-desc">' + escapeHtml(p.description || (p.isPain ? '针对' + p.name + '的分阶段疼痛管理方案，涵盖病因分析、临床表现与分期干预。' : '')) + '</div>' +
-      '<span class="protocol-card-badge" data-cat="' + p.category + '" style="margin-top:8px;">' + p.categoryName + '</span>' +
+      '<span class="protocol-card-badge" data-cat="' + escapeAttr(p.category) + '" style="margin-top:8px;">' + escapeHtml(p.categoryName) + '</span>' +
     '</div>' +
     extraHtml +
     '<div style="padding:0 16px 20px;">' + stagesHtml + '</div>' +
@@ -101162,36 +101242,45 @@ setIcon('dashboardRankIcon', 'evidence', 22);
 setIcon('dashboardAvgIcon', 'assessment', 22);
 
 function init() {
-  initIcons();
-  initAllScales();
-  initAllProtocols();
-  renderMuscleBodyGrid();
-  renderDiseaseBodyGrid();
-  
-  if (document.getElementById('btnScaleList')) {
-    document.getElementById('btnScaleList').classList.add('active');
+  try {
+    initIcons();
+    initAllScales();
+    initAllProtocols();
+    renderMuscleBodyGrid();
+    renderDiseaseBodyGrid();
+    
+    if (document.getElementById('btnScaleList')) {
+      document.getElementById('btnScaleList').classList.add('active');
+    }
+    
+    renderScaleList();
+    renderPatientList();
+    renderToolsCategoryBar();
+    renderToolsList();
+    renderGuidelinesCategoryBar();
+    renderGuidelinesList();
+    renderProtocolCatBar();
+    renderProtocolList();
+    
+    var toolsSearch = document.getElementById('toolsSearch');
+    if (toolsSearch) toolsSearch.addEventListener('input', renderToolsList);
+    var guidelinesSearch = document.getElementById('guidelinesSearch');
+    if (guidelinesSearch) guidelinesSearch.addEventListener('input', renderGuidelinesList);
+    var protocolSearch = document.getElementById('protocolSearch');
+    if (protocolSearch) protocolSearch.addEventListener('input', renderProtocolList);
+    
+    // v5: 不使用 Service Worker，避免 404 错误
+  } catch(e) {
+    ErrorTracker.captureException(e, 'init()');
+    console.error('[初始化失败]', e.message, e.stack);
+    var container = document.getElementById('app') || document.getElementById('mainContent') || document.body;
+    if (container) {
+      container.innerHTML = '<div style="padding:40px;text-align:center;color:#ef4444;font-size:16px;">⚠️ 页面加载失败，请刷新重试。<br><small style="color:#888;">如问题持续，请清除浏览器数据后重试。</small></div>';
+    }
   }
-  
-  renderScaleList();
-  renderPatientList();
-  renderToolsCategoryBar();
-  renderToolsList();
-  renderGuidelinesCategoryBar();
-  renderGuidelinesList();
-  renderProtocolCatBar();
-  renderProtocolList();
-  
-  var toolsSearch = document.getElementById('toolsSearch');
-  if (toolsSearch) toolsSearch.addEventListener('input', renderToolsList);
-  var guidelinesSearch = document.getElementById('guidelinesSearch');
-  if (guidelinesSearch) guidelinesSearch.addEventListener('input', renderGuidelinesList);
-  var protocolSearch = document.getElementById('protocolSearch');
-  if (protocolSearch) protocolSearch.addEventListener('input', renderProtocolList);
-  
-  // v5: 不使用 Service Worker，避免 404 错误
 }
 
-init();
+_safeRender(init, 'app-init');
 </script>
 </body>
 </html>
