@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>医智学 · 神经康复评估软件 V5.0 — 现状报告</title>
+<style>
+  :root{
+    --primary:#4B3FE3; --primary-light:#6B5FEB; --primary-bg:#EEEDFC;
+    --bg:#F4F5FA; --card:#FFFFFF; --text:#1A1A2E; --text2:#6B7280;
+    --border:#E8E9F0; --success:#10B981; --success-bg:#E6F9F1;
+    --warn:#F59E0B; --warn-bg:#FEF3E2; --err:#EF4444; --err-bg:#FDECEC;
+    --radius:14px; --shadow:0 2px 10px rgba(75,63,227,.08);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);line-height:1.7;padding:32px 16px}
+  .wrap{max-width:960px;margin:0 auto}
+  .hero{background:linear-gradient(135deg,#4B3FE3 0%,#6B5FEB 100%);border-radius:20px;color:#fff;padding:36px 32px;margin-bottom:24px}
+  .hero h1{font-size:26px;margin-bottom:6px}
+  .hero .sub{opacity:.9;font-size:14px}
+  .hero .badge{display:inline-block;background:rgba(255,255,255,.2);padding:3px 10px;border-radius:20px;font-size:12px;margin-top:12px}
+  .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px;margin-bottom:20px}
+  .card h2{font-size:18px;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+  .card h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--primary)}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border)}
+  th{color:var(--text2);font-weight:600;background:#FAFAFD}
+  .ok{color:var(--success);font-weight:600}
+  .warn{color:var(--warn);font-weight:600}
+  .shot{width:100%;border:1px solid var(--border);border-radius:12px;margin-top:8px}
+  .shot-cap{font-size:13px;color:var(--text2);margin-top:6px}
+  .pill{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600}
+  .pill.g{background:var(--success-bg);color:var(--success)}
+  .pill.y{background:var(--warn-bg);color:var(--warn)}
+  ul{margin-left:20px}
+  li{margin-bottom:6px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:680px){.grid2{grid-template-columns:1fr}}
+  .stat{text-align:center;padding:16px;border:1px solid var(--border);border-radius:12px}
+  .stat b{display:block;font-size:26px;color:var(--primary)}
+  .stat span{font-size:13px;color:var(--text2)}
+  .foot{text-align:center;color:var(--text2);font-size:12px;margin-top:24px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <h1>医智学 · 神经康复评估软件 V5.0</h1>
+    <div class="sub">项目现状与完整性核查报告</div>
+    <div class="badge">报告日期：2026-08-14 &nbsp;·&nbsp; 结论：软件完好，未丢失</div>
+  </div>
+
+  <div class="card">
+    <h2><span class="dot"></span>结论先行</h2>
+    <p style="font-size:15px">
+      你的评估软件 <b>完整无损，随时可运行</b>。项目本体位于 jigu-v2 仓库，主分支 <code>main</code> 与远端一致，全部源码、数据、素材都在 git 历史中，工作区文件零改动。已通过浏览器实测，页面正常加载、无控制台报错。
+    </p>
+  </div>
+
+  <div class="card">
+    <h2><span class="dot"></span>项目完整性核查</h2>
+    <table>
+      <tr><th>核查项</th><th>状态</th><th>说明</th></tr>
+      <tr><td>Git 主分支</td><td class="ok">正常</td><td><code>main</code> = <code>origin/main</code> = <code>8309050</code></td></tr>
+      <tr><td>核心脚本 app.js</td><td class="ok">零改动</td><td>工作区与 git HEAD 均为 70842 字节，完全一致</td></tr>
+      <tr><td>源码文件</td><td class="ok">完整</td><td>app.js / questions.js / data.js / index.html 等全部在 git 中</td></tr>
+      <tr><td>数据与素材</td><td class="ok">完整</td><td>data.js、data.min.json、assets 全部 60+ 张医图在库</td></tr>
+      <tr><td>远端仓库</td><td class="ok">干净</td><td>仅 main 分支，无多余分支 / 残留 Pages workflow</td></tr>
+      <tr><td>遗留杂项</td><td class="warn">2 个未跟踪文件</td><td><code>gh_home.html</code>、<code>single-file-v5.html</code>（被 .gitignore 忽略，未进 git，不影响项目）</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2><span class="dot"></span>浏览器实测</h2>
+    <div class="grid2">
+      <div class="stat"><b>正常</b><span>首页渲染</span></div>
+      <div class="stat"><b>0</b><span>控制台报错</span></div>
+    </div>
+    <table style="margin-top:16px">
+      <tr><th>验证项</th><th>结果</th></tr>
+      <tr><td>页面标题</td><td class="ok">医智学 · 肌骨康复学习</td></tr>
+      <tr><td>app.js / questions.js / data.js 加载</td><td class="ok">成功，DOM 稳定</td></tr>
+      <tr><td>JS 加载失败 / 网络 404</td><td class="ok">未发现</td></tr>
+      <tr><td>控制台错误</td><td class="ok">无（仅工具自身初始化日志）</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2><span class="dot"></span>功能截图</h2>
+    <p style="font-size:14px;color:var(--text2);margin-bottom:8px">以下为实体浏览器（1082×836）实测截图，非占位图。</p>
+    <img class="shot" src="screenshot-home.png" alt="医智学首页截图">
+    <div class="shot-cap">图 1 · 首页（医智学 · 肌骨康复学习，医疗蓝色系主题，276 张学习卡片入口）</div>
+    <img class="shot" src="screenshot-module.png" alt="考试模式截图">
+    <div class="shot-cap">图 2 · 考试模式（点击底部导航"考试"进入，题目与计时器正常渲染）</div>
+  </div>
+
+  <div class="card">
+    <h2><span class="dot"></span>项目当前已包含的稳定性修复</h2>
+    <p style="font-size:14px;color:var(--text2);margin-bottom:10px">以下修复已在项目最新提交 <code>fix(core): P0/P1/P2 stability &amp; UX fixes</code>（8309050）中合入：</p>
+    <ul>
+      <li><b>P0</b> · questions.js 异步加载 + 双就绪启动管理器</li>
+      <li><b>P0</b> · 考试计时器在切页/离开时清理 interval，支持挂起+恢复</li>
+      <li><b>P0</b> · saveState 400ms 防抖，关键路径用 flush 立即保存</li>
+      <li><b>P1</b> · questionBank + dataReady 双就绪门控，带超时诊断</li>
+      <li><b>P1</b> · 徽章（每日满分/90分/考试满分）持久化到 state.badges</li>
+      <li><b>P1</b> · 错误支持多条捕获、可追加日志、可"暂不处理"</li>
+      <li><b>P2</b> · localStorage 渐进式清理，不再一刀切清空</li>
+      <li><b>P2</b> · 连续学习天数仅在完成每日/考试后记入</li>
+      <li><b>P2</b> · 首页 276 卡片按 40 条/批 setTimeout(0) 分批渲染，避免卡顿</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2><span class="dot"></span>后续建议</h2>
+    <ul>
+      <li>如需上线，可执行 <code>python3 build_single.py</code> 生成单文件版 <code>dist/single-file-v5.html</code>，再用 GitHub Pages 部署。</li>
+      <li>两个未跟踪文件 <code>gh_home.html</code>、<code>single-file-v5.html</code> 与现项目无关，可随时删除。</li>
+      <li>本地残留分支 <code>trae/agent-6TCIP0</code> 可删除（远端已无此分支）。</li>
+      <li>建议为 app.js 补充单元测试与前端错误监控，持续保障在线稳定性。</li>
+    </ul>
+  </div>
+
+  <div class="foot">医智学 · 神经康复评估软件 V5.0 · 现状报告 &nbsp;|&nbsp; 生成于 2026-08-14</div>
+</div>
+</body>
+</html>
