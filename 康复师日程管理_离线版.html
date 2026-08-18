@@ -2260,6 +2260,29 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
      * 工具函数区
      * ============================================================ */
 
+    /* 净化用户输入：将可能包含 HTML 的文本安全转义 */
+    const escapeHtml = (str) => {
+      if (str == null) return '';
+      const div = document.createElement('div');
+      div.textContent = String(str);
+      return div.innerHTML;
+    };
+
+    // 数据 Schema 校验：确保患者对象字段合法
+    const validatePatient = (p) => {
+      if (!p || typeof p !== 'object') return false;
+      if (!p.id || !p.name) return false;
+      if (p.startTime && !/^\d{2}:\d{2}$/.test(p.startTime)) return false;
+      if (p.endTime && !/^\d{2}:\d{2}$/.test(p.endTime)) return false;
+      if (p.fee != null && isNaN(Number(p.fee))) return false;
+      if (p.age != null && (isNaN(Number(p.age)) || Number(p.age) < 0 || Number(p.age) > 150)) return false;
+      return true;
+    };
+
+    // 金额转分（整数运算，避免浮点误差）
+    const yuanToFen = (yuan) => Math.round((Number(yuan) || 0) * 100);
+    const fenToYuan = (fen) => (fen / 100).toFixed(2);
+
     // 日期 → YYYY-MM-DD（本地时区）
     const toDateKey = (date) => {
       const y = date.getFullYear();
@@ -2270,8 +2293,14 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
 
     const getTodayKey = () => toDateKey(new Date());
 
-    // 生成唯一 ID
-    const genId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    // 生成唯一 ID — 时间戳(ms) + 高熵随机(base36, 12位) + 进程计数器
+    let _idCounter = 0;
+    const genId = () => {
+      const ts = Date.now().toString(36);
+      const rand = Math.random().toString(36).slice(2, 14);
+      _idCounter = (_idCounter + 1) % 2147483647;
+      return `${ts}-${rand}-${_idCounter.toString(36)}`;
+    };
 
     // 中文格式化日期
     const formatDateCN = (dateKey) => {
@@ -2283,15 +2312,16 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
     // localStorage 键名（按天隔离）
     const getStorageKey = (dateKey, type) => `schedule_${dateKey}_${type}`;
 
-    // 计算【某天 patients】的已完成流水
-    const calcDailyRevenue = (patients) => {
+    // 计算【某天 patients】的已完成流水（整数分运算，避免浮点误差）
+    const calcDailyRevenueFen = (patients) => {
       return patients
         .filter(p => p.completed && p.fee)
-        .reduce((sum, p) => sum + (Number(p.fee) || 0), 0);
+        .reduce((sum, p) => sum + yuanToFen(p.fee), 0);
     };
+    const calcDailyRevenue = (patients) => calcDailyRevenueFen(patients) / 100;
 
     // 扫描 localStorage，按月汇总所有已完成患者费用
-    // 返回 { 'YYYY-MM': 金额, ... }
+    // 返回 { 'YYYY-MM': 金额, ... }（使用整数分运算）
     const scanMonthlyRevenue = () => {
       const result = {};
       const regex = /^schedule_(\d{4}-\d{2})-\d{2}_patients$/;
@@ -2302,12 +2332,15 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
         const monthKey = match[1];
         try {
           const arr = JSON.parse(localStorage.getItem(key) || '[]');
-          const sum = arr
-            .filter(p => p.completed && p.fee)
-            .reduce((s, p) => s + (Number(p.fee) || 0), 0);
-          result[monthKey] = (result[monthKey] || 0) + sum;
+          if (!Array.isArray(arr)) continue;
+          const sumFen = arr
+            .filter(p => p && p.completed && p.fee)
+            .reduce((s, p) => s + yuanToFen(p.fee), 0);
+          result[monthKey] = (result[monthKey] || 0) + sumFen;
         } catch (e) { /* 忽略坏数据 */ }
       }
+      // 分转元
+      for (const k in result) { result[k] = result[k] / 100; }
       return result;
     };
 
@@ -2476,6 +2509,9 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
     /* ============================================================
      * F5: 数据备份/恢复工具函数
      * ============================================================ */
+    const APP_VERSION = '1.1';
+    const MIN_BACKUP_VERSION = '1.0';
+
     // 导出所有本地数据为 JSON 字符串
     const exportAllData = () => {
       const data = {};
@@ -2486,21 +2522,58 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
         }
       }
       data['__export_time'] = new Date().toISOString();
-      data['__app_version'] = '1.0';
+      data['__app_version'] = APP_VERSION;
+      data['__schema_version'] = 1;
       return JSON.stringify(data, null, 2);
     };
+
     // 从 JSON 字符串恢复所有数据到 localStorage，返回恢复条数
+    // 校验：版本号、格式、数据完整性
     const importAllData = (jsonString) => {
-      const data = JSON.parse(jsonString);
+      let data;
+      try {
+        data = JSON.parse(jsonString);
+      } catch (e) {
+        throw new Error('文件格式错误：不是有效的 JSON');
+      }
+      if (!data || typeof data !== 'object') {
+        throw new Error('文件格式错误：数据结构无效');
+      }
+      // 版本校验
+      const version = data['__app_version'];
+      if (!version) {
+        throw new Error('文件格式错误：缺少版本号标识，可能不是本应用的备份文件');
+      }
+      // 版本兼容性检查（允许同主版本）
+      const majorVer = parseInt(version, 10);
+      const minMajor = parseInt(MIN_BACKUP_VERSION, 10);
+      if (isNaN(majorVer) || majorVer < minMajor) {
+        throw new Error(`版本不兼容：备份文件版本 ${version}，需要 ${MIN_BACKUP_VERSION} 或更高`);
+      }
       let count = 0;
+      let invalidCount = 0;
       for (const key in data) {
         if (key.startsWith('__')) continue;
         if (key.startsWith('schedule_') || key === 'reminder_times' || key === 'reminder_sound_enabled') {
+          // 对患者数据做导入前校验
+          if (key.endsWith('_patients')) {
+            try {
+              const arr = JSON.parse(data[key]);
+              if (Array.isArray(arr)) {
+                const valid = arr.filter(validatePatient);
+                invalidCount += arr.length - valid.length;
+                data[key] = JSON.stringify(valid);
+              }
+            } catch (e) {
+              invalidCount++;
+              data[key] = '[]';
+            }
+          }
           localStorage.setItem(key, data[key]);
           count++;
         }
       }
-      return count;
+      return { count, invalidCount };
     };
 
     /* ============================================================
@@ -2789,10 +2862,16 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
      * 悬停时右上角显示铅笔图标提示可编辑
      * ============================================================ */
     function PatientItem({ patient, onToggle, onDelete, onEdit }) {
-      // 阻止复选框/删除按钮的点击冒泡到卡片，避免误触发编辑
+      const [showConfirmDelete, setShowConfirmDelete] = useState(false);
+
       const handleToggle = (e) => { e.stopPropagation(); onToggle(patient.id); };
-      const handleDelete = (e) => { e.stopPropagation(); onDelete(patient.id); };
+      const handleDelete = (e) => { e.stopPropagation(); setShowConfirmDelete(true); };
       const handleCardClick = () => { onEdit(patient); };
+
+      const confirmDelete = () => {
+        setShowConfirmDelete(false);
+        onDelete(patient.id);
+      };
 
       return (
         <div
@@ -2832,6 +2911,15 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
           <button onClick={handleDelete} className="flex-shrink-0 p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition" aria-label="删除" title="删除此条记录">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
           </button>
+          {showConfirmDelete && (
+            <ConfirmModal
+              title="删除患者记录"
+              message={`确定要删除患者「${patient.name}」的记录吗？此操作不可恢复。`}
+              confirmText="删除"
+              onConfirm={confirmDelete}
+              onClose={() => setShowConfirmDelete(false)}
+            />
+          )}
         </div>
       );
     }
@@ -3020,7 +3108,8 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
      * ============================================================ */
     function TodoList({ todos, onAdd, onToggle, onDelete }) {
       const [input, setInput] = useState('');
-      const [showCompleteConfirm, setShowCompleteConfirm] = useState(false); // 全部完成确认框
+      const [showCompleteConfirm, setShowCompleteConfirm] = useState(false);
+      const [deleteTargetId, setDeleteTargetId] = useState(null);
       const handleAdd = (e) => {
         e.preventDefault();
         if (!input.trim()) return;
@@ -3091,7 +3180,7 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
                     {todo.completed && (<svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" /></svg>)}
                   </button>
                   <p className={`flex-1 text-sm font-medium text-gray-800 break-words ${todo.completed ? 'completed-text' : ''}`}>{todo.text}</p>
-                  <button onClick={() => onDelete(todo.id)} className="flex-shrink-0 p-1 text-gray-400 hover:text-red-500 transition" aria-label="删除">
+                  <button onClick={() => setDeleteTargetId(todo.id)} className="flex-shrink-0 p-1 text-gray-400 hover:text-red-500 transition" aria-label="删除">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
                   </button>
                 </div>
@@ -3107,6 +3196,16 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
               confirmText="全部完成"
               onConfirm={handleConfirmCompleteAll}
               onClose={() => setShowCompleteConfirm(false)}
+            />
+          )}
+          {/* 单条删除确认弹窗 */}
+          {deleteTargetId && (
+            <ConfirmModal
+              title="删除待办"
+              message="确定要删除这条待办吗？此操作不可恢复。"
+              confirmText="删除"
+              onConfirm={() => { const id = deleteTargetId; setDeleteTargetId(null); onDelete(id); }}
+              onClose={() => setDeleteTargetId(null)}
             />
           )}
         </section>
@@ -3832,27 +3931,48 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
         try {
           const p = localStorage.getItem(getStorageKey(selectedDate, 'patients'));
           const t = localStorage.getItem(getStorageKey(selectedDate, 'todos'));
-          setPatients(p ? JSON.parse(p) : []);
-          setTodos(t ? JSON.parse(t) : []);
+          // 加载时也做 Schema 校验，过滤掉坏数据
+          const parsedP = p ? JSON.parse(p) : [];
+          const parsedT = t ? JSON.parse(t) : [];
+          setPatients(Array.isArray(parsedP) ? parsedP.filter(validatePatient) : []);
+          setTodos(Array.isArray(parsedT) ? parsedT : []);
         } catch (e) {
           console.error('读取本地数据失败：', e);
           setPatients([]); setTodos([]);
+          setToastMessage('⚠️ 读取数据失败，可能是数据损坏，建议从备份恢复');
         }
       }, [selectedDate]);
 
       /* ---------- 数据写入 localStorage（当前 selectedDate） ---------- */
+      const toastRef = useRef(null);
+      toastRef.current = setToastMessage;
+
       useEffect(() => {
         try {
           localStorage.setItem(getStorageKey(selectedDate, 'patients'), JSON.stringify(patients));
-          setCalendarRefresh(n => n + 1); // 触发日历刷新
-        } catch (e) { console.error('保存患者数据失败：', e); }
+          setCalendarRefresh(n => n + 1);
+        } catch (e) {
+          console.error('保存患者数据失败：', e);
+          if (e.name === 'QuotaExceededError' || e.code === 22) {
+            toastRef.current?.('⚠️ 本地存储空间不足，请立即备份数据并清理历史记录');
+          } else {
+            toastRef.current?.('⚠️ 保存失败，请刷新页面重试');
+          }
+        }
       }, [patients, selectedDate]);
 
       useEffect(() => {
         try {
           localStorage.setItem(getStorageKey(selectedDate, 'todos'), JSON.stringify(todos));
           setCalendarRefresh(n => n + 1);
-        } catch (e) { console.error('保存待办数据失败：', e); }
+        } catch (e) {
+          console.error('保存待办数据失败：', e);
+          if (e.name === 'QuotaExceededError' || e.code === 22) {
+            toastRef.current?.('⚠️ 本地存储空间不足，请立即备份数据并清理历史记录');
+          } else {
+            toastRef.current?.('⚠️ 待办保存失败，请刷新页面重试');
+          }
+        }
       }, [todos, selectedDate]);
 
       /* ---------- 定时提醒：扫描未完成项，有则弹窗 ---------- */
@@ -3883,25 +4003,25 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
 
       /* ---------- 定时器调度：为所有启用的提醒时间注册 setTimeout ---------- */
       const scheduleTimers = useCallback((times, triggerFn) => {
-        // 1. 清理所有旧定时器，避免重复触发
         timerIdsRef.current.forEach(id => clearTimeout(id));
         timerIdsRef.current = [];
-        // 2. 获取当前时间
         const now = new Date();
         const todayKey = getTodayKey();
-        // 3. 为每个启用的提醒时间注册一次性 setTimeout
         times.forEach(({ time, enabled }) => {
           if (!enabled) return;
           const [h, m] = time.split(':').map(Number);
           const target = new Date();
           target.setHours(h, m, 0, 0);
           const msUntil = target.getTime() - now.getTime();
-          // 如果时间已过，今天不再触发
-          if (msUntil <= 0) return;
-          // 检查是否已触发过（去重）
           const flagKey = `reminded_${todayKey}_${time}`;
           if (sessionStorage.getItem(flagKey)) return;
-          // 注册一次性 setTimeout
+          if (msUntil <= 0) {
+            // 时间已过但未触发（如浏览器后台恢复），立即补发一次
+            sessionStorage.setItem(flagKey, '1');
+            setTodayTriggeredCount(c => c + 1);
+            triggerFn();
+            return;
+          }
           const timerId = setTimeout(() => {
             sessionStorage.setItem(flagKey, '1');
             setTodayTriggeredCount(c => c + 1);
@@ -4060,7 +4180,7 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
         const reader = new FileReader();
         reader.onload = (e) => {
           try {
-            const count = importAllData(e.target.result);
+            const result = importAllData(e.target.result);
             // 重载所有状态
             const p = localStorage.getItem(getStorageKey(selectedDate, 'patients'));
             const t = localStorage.getItem(getStorageKey(selectedDate, 'todos'));
@@ -4069,9 +4189,13 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
             setReminderTimes(loadReminderTimes());
             setReminderSoundEnabled(loadReminderSoundEnabled());
             setCalendarRefresh(n => n + 1);
-            setToastMessage(`数据恢复成功，共恢复 ${count} 条记录`);
+            let msg = `数据恢复成功，共恢复 ${result.count} 条记录`;
+            if (result.invalidCount > 0) {
+              msg += `（已过滤 ${result.invalidCount} 条异常数据）`;
+            }
+            setToastMessage(msg);
           } catch (err) {
-            setToastMessage('数据恢复失败：文件格式错误');
+            setToastMessage(`数据恢复失败：${err.message}`);
           }
         };
         reader.readAsText(file);
