@@ -5,13 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>康复师今日日程管理</title>
 
-  <!-- PWA: manifest + theme-color + apple-touch-icon -->
-  <link rel="manifest" href='data:application/manifest+json,{"name":"康复师日程管理","short_name":"康复师","theme_color":"#3B82F6","display":"standalone","background_color":"#EFF6FF","start_url":".","icons":[]}' />
-  <meta name="theme-color" content="#3B82F6" />
+  <!-- PWA: 完整 manifest + theme-color + 苹果主屏配置 -->
+  <link rel="manifest" href="./manifest.json" />
+  <meta name="theme-color" content="#2563EB" />
+  <!-- 苹果 iOS 添加到主屏幕 -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="apple-mobile-web-app-title" content="康复师" />
-  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' fill='%233B82F6' rx='32'/%3E%3Ctext x='96' y='130' font-size='100' text-anchor='middle'%3E%F0%9F%8F%A5%3C/text%3E%3C/svg%3E" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="康复师日程" />
+  <meta name="application-name" content="康复师日程" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+  <link rel="icon" type="image/png" sizes="512x512" href="./icons/icon-512.png" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+  <link rel="preconnect" href="https://xcaihgga.github.io" crossorigin />
 
   <!-- Tailwind CSS via CDN -->
   <style>
@@ -4343,6 +4349,17 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
      * 渲染
      * ============================================================ */
     ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+
+  <!-- PWA: 注册 Service Worker（实现离线缓存） -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('./sw.js', { scope: './' })
+          .then(function (reg) { console.log('SW 注册成功:', reg.scope); })
+          .catch(function (err) { console.warn('SW 注册失败:', err); });
+      });
+    }
   </script>
 </body>
 </html>

@@ -1,0 +1,42 @@
+{
+  "name": "康复师今日日程管理",
+  "short_name": "康复师日程",
+  "description": "康复治疗师每日日程管理：患者安排、待办事项、月度流水、定时提醒，数据本地存储，完全离线可用。",
+  "id": "rehab-schedule-pwa",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#EFF6FF",
+  "theme_color": "#2563EB",
+  "categories": ["medical", "productivity", "health"],
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "今日日程",
+      "short_name": "今日",
+      "description": "打开今日日程视图",
+      "url": "./"
+    }
+  ]
+}
