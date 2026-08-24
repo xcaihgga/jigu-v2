@@ -94,4 +94,5 @@ function draw(size, maskable) {
 fs.writeFileSync(path.join(OUT, 'icon-192.png'), encodePNG(192, 192, draw(192, false)));
 fs.writeFileSync(path.join(OUT, 'icon-512.png'), encodePNG(512, 512, draw(512, false)));
 fs.writeFileSync(path.join(OUT, 'icon-512-maskable.png'), encodePNG(512, 512, draw(512, true)));
+fs.writeFileSync(path.join(OUT, 'apple-touch-icon.png'), encodePNG(180, 180, draw(180, false)));
 console.log('Icons generated:', fs.readdirSync(OUT));
