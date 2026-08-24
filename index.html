@@ -8,7 +8,7 @@
   <!-- PWA: 完整 manifest + theme-color + 苹果主屏配置 -->
   <link rel="manifest" href="./manifest.json" />
   <meta name="theme-color" content="#2563EB" />
-  <!-- 苹果 iOS 添加到主屏幕 -->
+  <!-- 苹果 iOS 添加到主屏幕 → 全屏 standalone（必须配合 Safari 的"添加到主屏幕"使用） -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -16,7 +16,7 @@
   <meta name="application-name" content="康复师日程" />
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
   <link rel="icon" type="image/png" sizes="512x512" href="./icons/icon-512.png" />
-  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="preconnect" href="https://xcaihgga.github.io" crossorigin />
 
   <!-- Tailwind CSS via CDN -->
@@ -3850,6 +3850,13 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
       const [dismissed, setDismissed] = useState(() => {
         try { return localStorage.getItem('pwa_install_dismissed') === 'true'; } catch (e) { return false; }
       });
+      const [showIosGuide, setShowIosGuide] = useState(false);
+
+      // 检测 iOS（Safari）。iOS 没有 beforeinstallprompt API，需手动添加到主屏幕
+      const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      // 已处于独立全屏运行状态（说明已装好）
+      const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
       useEffect(() => {
         const handler = (e) => {
@@ -3872,22 +3879,65 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
         try { localStorage.setItem('pwa_install_dismissed', 'true'); } catch (e) { /* 忽略 */ }
       };
 
-      if (!deferredPrompt || dismissed) return null;
+      // -------- Android / 桌面 Chrome：可直接调用系统安装面板 --------
+      if (deferredPrompt && !dismissed) {
+        return (
+          <div className="bg-calm-blue text-white px-4 py-2.5 flex items-center justify-between animate-fadeIn">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-lg">📱</span>
+              <span>安装到主屏幕，像原生应用一样使用</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={handleInstall} className="px-3 py-1.5 bg-white text-calm-blue-dark rounded-lg text-sm font-medium hover:bg-calm-blue-light transition">安装</button>
+              <button onClick={handleDismiss} className="text-white/80 hover:text-white p-1" aria-label="关闭">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+          </div>
+        );
+      }
 
-      return (
-        <div className="bg-calm-blue text-white px-4 py-2.5 flex items-center justify-between animate-fadeIn">
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-lg">📱</span>
-            <span>安装到主屏幕，像原生应用一样使用</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={handleInstall} className="px-3 py-1.5 bg-white text-calm-blue-dark rounded-lg text-sm font-medium hover:bg-calm-blue-light transition">安装</button>
-            <button onClick={handleDismiss} className="text-white/80 hover:text-white p-1" aria-label="关闭">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
-            </button>
-          </div>
-        </div>
-      );
+      // -------- iOS Safari：无安装 API，显示"添加到主屏幕"步骤引导 --------
+      if (isIOS && !isStandalone && !dismissed) {
+        return (
+          <>
+            <div className="bg-calm-blue text-white px-4 py-2.5 flex items-center justify-between animate-fadeIn" onClick={() => setShowIosGuide(true)}>
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-lg">📱</span>
+                <span>iPhone：点此查看「添加到主屏幕」步骤</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-3 py-1.5 bg-white text-calm-blue-dark rounded-lg text-sm font-medium">查看</span>
+                <button onClick={(e) => { e.stopPropagation(); handleDismiss(); }} className="text-white/80 hover:text-white p-1" aria-label="关闭">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              </div>
+            </div>
+
+            {showIosGuide && (
+              <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fadeIn" onClick={(e) => { if (e.target === e.currentTarget) setShowIosGuide(false); }}>
+                <div className="absolute inset-0 bg-black/40 backdrop-blur-sm"></div>
+                <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm animate-scaleIn overflow-hidden">
+                  <div className="px-6 pt-6">
+                    <h3 className="text-lg font-bold text-gray-800">添加到 iPhone 主屏幕</h3>
+                    <p className="text-xs text-gray-400 mt-1">请务必用「Safari」浏览器打开，这样才会全屏、无地址栏</p>
+                  </div>
+                  <ol className="px-6 py-4 space-y-3 text-sm text-gray-700">
+                    <li className="flex gap-3"><span className="flex-shrink-0 w-6 h-6 rounded-full bg-calm-blue text-white flex items-center justify-center text-xs font-bold">1</span><span>用 <b>Safari</b> 打开本链接</span></li>
+                    <li className="flex gap-3"><span className="flex-shrink-0 w-6 h-6 rounded-full bg-calm-blue text-white flex items-center justify-center text-xs font-bold">2</span><span>点底部 <b>「分享」按钮</b>（方框 + 上箭头）</span></li>
+                    <li className="flex gap-3"><span className="flex-shrink-0 w-6 h-6 rounded-full bg-calm-blue text-white flex items-center justify-center text-xs font-bold">3</span><span>下滑点 <b>「添加到主屏幕」</b> → 右上角 <b>「添加」</b></span></li>
+                  </ol>
+                  <div className="px-6 py-4 border-t border-gray-100 flex gap-3">
+                    <button onClick={() => setShowIosGuide(false)} className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-lg font-medium text-sm hover:bg-gray-200 transition">关闭</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        );
+      }
+
+      return null;
     }
 
 
