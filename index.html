@@ -2274,15 +2274,28 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
       return div.innerHTML;
     };
 
-    // 数据 Schema 校验：确保患者对象字段合法
-    const validatePatient = (p) => {
-      if (!p || typeof p !== 'object') return false;
-      if (!p.id || !p.name) return false;
-      if (p.startTime && !/^\d{2}:\d{2}$/.test(p.startTime)) return false;
-      if (p.endTime && !/^\d{2}:\d{2}$/.test(p.endTime)) return false;
-      if (p.fee != null && isNaN(Number(p.fee))) return false;
-      if (p.age != null && (isNaN(Number(p.age)) || Number(p.age) < 0 || Number(p.age) > 150)) return false;
-      return true;
+    // 清洗患者数据：非法字段置默认值，绝不整条删除（防止用户数据静默丢失）
+    // 与表单提交校验对齐：age ∈ [0,150]、fee ≥ 0
+    const sanitizePatient = (p) => {
+      if (!p || typeof p !== 'object') return null;
+      const out = { ...p };
+      if (!out.id || typeof out.id !== 'string') out.id = genId();
+      if (typeof out.name !== 'string' || !out.name.trim()) out.name = '未命名患者';
+      if (Array.isArray(out.startTime) || typeof out.startTime !== 'string') out.startTime = '';
+      if (Array.isArray(out.endTime) || typeof out.endTime !== 'string') out.endTime = '';
+      const feeNum = Number(out.fee);
+      if (out.fee != null && out.fee !== '') {
+        out.fee = Number.isFinite(feeNum) && feeNum >= 0 ? feeNum : null;
+      }
+      const ageNum = Number(out.age);
+      if (out.age != null && out.age !== '') {
+        out.age = Number.isInteger(ageNum) && ageNum >= 0 && ageNum <= 150 ? ageNum : null;
+      }
+      // 其余文本字段强制转字符串，杜绝脏类型
+      ['department', 'disease', 'notes', 'gender'].forEach((k) => {
+        if (out[k] == null) { out[k] = ''; } else if (typeof out[k] !== 'string') { out[k] = String(out[k]); }
+      });
+      return out;
     };
 
     // 金额转分（整数运算，避免浮点误差）
@@ -2479,7 +2492,12 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
         try {
           const arr = JSON.parse(localStorage.getItem(key) || '[]');
           arr.forEach(p => {
-            const esc = (v) => { const s = String(v == null ? '' : v); return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s; };
+            const esc = (v) => {
+              let s = String(v == null ? '' : v);
+              // CSV 注入防护：以 = + - @ 开头的单元格加单引号前缀，防止 Excel 执行公式
+              if (/^[=+\-@]/.test(s)) s = "'" + s;
+              return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+            };
             rows.push([
               esc(dateKey), esc(p.name), esc(p.department), esc(p.disease || ''), esc(p.fee || ''),
               esc(p.completed ? '已完成' : '未完成'), esc(p.startTime), esc(p.endTime)
@@ -2561,17 +2579,19 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
       for (const key in data) {
         if (key.startsWith('__')) continue;
         if (key.startsWith('schedule_') || key === 'reminder_times' || key === 'reminder_sound_enabled') {
-          // 对患者数据做导入前校验
+          // 对患者数据做导入前清洗（置默认值，不丢记录）
           if (key.endsWith('_patients')) {
             try {
               const arr = JSON.parse(data[key]);
               if (Array.isArray(arr)) {
-                const valid = arr.filter(validatePatient);
-                invalidCount += arr.length - valid.length;
-                data[key] = JSON.stringify(valid);
+                const cleaned = arr.map(sanitizePatient).filter(Boolean);
+                data[key] = JSON.stringify(cleaned);
+              } else {
+                invalidCount++; // 非数组视为坏数据
+                data[key] = '[]';
               }
             } catch (e) {
-              invalidCount++;
+              invalidCount++; // JSON 解析失败
               data[key] = '[]';
             }
           }
@@ -2761,6 +2781,11 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
         if (!startTime) errs.startTime = '请选择开始时间';
         if (!endTime) errs.endTime = '请选择结束时间';
         if (startTime && endTime && startTime >= endTime) errs.time = '结束时间须晚于开始时间';
+        // 提交侧强校验：与 sanitizePatient/清洗逻辑对齐，避免"存得进、读不出"
+        const ageNum = age === '' ? null : Number(age);
+        if (ageNum != null && (!Number.isInteger(ageNum) || ageNum < 0 || ageNum > 150)) errs.age = '年龄需为 0-150 之间的整数';
+        const feeNum = fee === '' ? null : Number(fee);
+        if (feeNum != null && (!Number.isFinite(feeNum) || feeNum < 0)) errs.fee = '费用需为非负数字';
         return errs;
       };
 
@@ -2773,9 +2798,9 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
           id: isEdit ? initial.id : genId(),
           name: name.trim(),
           startTime, endTime, gender,
-          age: age ? parseInt(age, 10) : null,
+          age: age === '' ? null : parseInt(age, 10), // 0 岁合法，空才置 null
           department: department.trim(),
-          fee: fee ? Number(fee) : null,
+          fee: fee === '' ? null : Math.round(Number(fee) * 100) / 100, // 保留 0 元，限两位小数
           disease: disease.trim(), // 患者疾病（选填）
           notes: notes.trim(),
           // 编辑模式保持原 completed 状态，新增模式默认未完成
@@ -2824,7 +2849,8 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1.5">年龄</label>
-                  <input type="number" value={age} onChange={(e) => setAge(e.target.value)} placeholder="如：58" min="0" max="150" className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-calm-blue transition" />
+                  <input type="number" value={age} onChange={(e) => setAge(e.target.value)} placeholder="如：58" min="0" max="150" className={`w-full px-3 py-2.5 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-calm-blue transition ${errors.age ? 'border-red-400 bg-red-50' : 'border-gray-300'}`} />
+                  {errors.age && <p className="text-xs text-red-500 mt-1">{errors.age}</p>}
                 </div>
               </div>
               {/* 科室 + 治疗费用 同一行 */}
@@ -2836,9 +2862,10 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
                 <div>
                   <label className="block text-xs text-gray-500 mb-1.5">治疗费用</label>
                   <div className="relative">
-                    <input type="number" value={fee} onChange={(e) => setFee(e.target.value)} placeholder="单次治疗费" min="0" className="w-full pl-3 pr-8 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-calm-blue transition" />
+                    <input type="number" value={fee} onChange={(e) => setFee(e.target.value)} placeholder="单次治疗费" min="0" className={`w-full pl-3 pr-8 py-2.5 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-calm-blue transition ${errors.fee ? 'border-red-400 bg-red-50' : 'border-gray-300'}`} />
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">元</span>
                   </div>
+                  {errors.fee && <p className="text-xs text-red-500 mt-1">{errors.fee}</p>}
                 </div>
               </div>
               {/* 患者疾病（选填，放在科室下方、注意事项上方） */}
@@ -3987,11 +4014,11 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
         try {
           const p = localStorage.getItem(getStorageKey(selectedDate, 'patients'));
           const t = localStorage.getItem(getStorageKey(selectedDate, 'todos'));
-          // 加载时也做 Schema 校验，过滤掉坏数据
+          // 加载时清洗脏数据（置默认值），绝不整条删除用户数据
           const parsedP = p ? JSON.parse(p) : [];
           const parsedT = t ? JSON.parse(t) : [];
-          setPatients(Array.isArray(parsedP) ? parsedP.filter(validatePatient) : []);
-          setTodos(Array.isArray(parsedT) ? parsedT : []);
+          setPatients(Array.isArray(parsedP) ? parsedP.map(sanitizePatient).filter(Boolean) : []);
+          setTodos(Array.isArray(parsedT) ? parsedT.map((td) => (td && typeof td === 'object' ? td : null)).filter(Boolean) : []);
         } catch (e) {
           console.error('读取本地数据失败：', e);
           setPatients([]); setTodos([]);
@@ -4207,11 +4234,17 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
         try {
           const currentPatients = JSON.parse(localStorage.getItem(getStorageKey(dateKey, 'patients')) || '[]');
           if (currentPatients.length === 0) return;
-          // 生成新患者列表：新 ID、completed=false、createdAt=Date.now()
+          const existingTomorrow = JSON.parse(localStorage.getItem(getStorageKey(tomorrowKey, 'patients')) || '[]');
+          // 合并：保留明天已有安排（不覆盖），追加今天的副本（新 ID、重置完成态）
           const newPatients = currentPatients.map(p => ({ ...p, id: genId(), completed: false, createdAt: Date.now() }));
-          localStorage.setItem(getStorageKey(tomorrowKey, 'patients'), JSON.stringify(newPatients));
+          const merged = [...existingTomorrow, ...newPatients];
+          localStorage.setItem(getStorageKey(tomorrowKey, 'patients'), JSON.stringify(merged));
           setCalendarRefresh(n => n + 1);
-          setToastMessage(`已复制 ${newPatients.length} 位患者到明天`);
+          if (existingTomorrow.length > 0) {
+            setToastMessage(`已复制 ${newPatients.length} 位患者到明天（明天原有 ${existingTomorrow.length} 条已保留）`);
+          } else {
+            setToastMessage(`已复制 ${newPatients.length} 位患者到明天`);
+          }
         } catch (e) {
           setToastMessage('复制失败，请重试');
         }
